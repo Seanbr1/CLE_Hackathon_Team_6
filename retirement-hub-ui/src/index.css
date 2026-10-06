@@ -1,0 +1,103 @@
+:root {
+  font-family: 'Segoe UI', Arial, sans-serif;
+  color: var(--text-black);
+  background: var(--superlight-grey);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-optical-sizing: auto;
+  font-weight: 400;
+  font-size: 14px;
+
+  --brand-red: #ba0c2f;
+  --medium-red: #850822;
+  --dark-red: #6d071c;
+  --secondary: #005656;
+  --text-black: #36362f;
+  --brand-grey: #838271;
+  --dark-grey: #51534a;
+  --superlight-grey: #f5f4f2;
+  --light-grey: #ecebe4;
+  --success: #007e7f;
+  --success-light: #f2faf9;
+  --error: #d20d35;
+  --error-light: #feeff2;
+  --warning: #b08824;
+  --warning-light: #faf5e8;
+  --info: #007cbf;
+  --info-light: #e8f7ff;
+  --badge-01: #e7f6f4;
+  --badge-02: #d9f7ff;
+  --badge-03: #f0f6dd;
+  --badge-04: #fcf1c5;
+  --badge-05: #f7eff6;
+  --navy: var(--dark-red);
+  --navy-deep: var(--dark-red);
+  --ink: var(--text-black);
+  --muted: var(--dark-grey);
+  --line: var(--light-grey);
+  --paper: #ffffff;
+  --canvas: var(--superlight-grey);
+  --mint: var(--badge-01);
+  --mint-ink: var(--secondary);
+  --red-bg: var(--error-light);
+  --red-ink: var(--error);
+  --amber-bg: var(--warning-light);
+  --amber-ink: var(--dark-grey);
+  --shadow-small: rgba(100, 100, 100, 0.32) 0 1px 4px;
+  --shadow-medium: rgba(0, 0, 0, 0.15) 0 2px 10px;
+  --shadow-wide:
+    rgba(100, 100, 100, 0.32) 0 1px 4px -2px,
+    rgba(0, 0, 0, 0.15) 0 7px 30px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background: var(--canvas);
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:focus-visible,
+input:focus-visible {
+  outline: 3px solid var(--secondary);
+  outline-offset: 2px;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin-top: 0;
+}
+
+h1,
+h2,
+h3 {
+  font-family: 'Segoe UI', Arial, sans-serif;
+  color: var(--navy-deep);
+}
+
+::selection {
+  color: var(--dark-red);
+  background: var(--badge-01);
+}

@@ -1,0 +1,25 @@
+# Python environments
+.venv/
+venv/
+
+# Java / Maven build output
+**/target/
+
+# React / Vite build output and dependencies
+retirement-hub-ui/node_modules/
+retirement-hub-ui/dist/
+
+# Local environment and secret files
+.env
+.env.*
+!.env.example
+retirement-hub-ui/.env
+retirement-hub-ui/.env.*
+!retirement-hub-ui/.env.example
+
+# Logs and operating-system/editor files
+*.log
+Thumbs.db
+.DS_Store
+.idea/
+.vscode/
