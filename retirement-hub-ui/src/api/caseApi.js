@@ -38,6 +38,20 @@ export async function fetchCases({ signal } = {}) {
   return cases
 }
 
+export function fetchPolicy(policyId, { signal } = {}) {
+  return request(`/policies/${encodeURIComponent(policyId)}`, { signal }).then((result) => {
+    if (
+      !result
+      || typeof result !== 'object'
+      || result.policyId !== policyId
+      || typeof result.maturityDate !== 'string'
+    ) {
+      throw new Error('Policy service returned an unexpected record.')
+    }
+    return result
+  })
+}
+
 export function createPolicy(policy) {
   return request('/policies', { method: 'POST', body: policy }).then((result) => {
     if (!result || typeof result.policyId !== 'string') {

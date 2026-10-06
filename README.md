@@ -14,6 +14,12 @@ and records the required document types. The backend currently stores data in
 memory. Document recording does not upload file contents, and the maturity
 package workflow generates email content but does not deliver email.
 
+The UI also includes a review-and-acknowledgement step before saving a maturity
+choice, case email previews, and synthetic pension values for demonstration
+only. These sample values are not API valuations, personalised forecasts,
+quotes, guarantees or financial advice. Broker call notes are session-only and
+are not saved by the backend.
+
 ## Run locally
 
 Run the backend in one terminal:

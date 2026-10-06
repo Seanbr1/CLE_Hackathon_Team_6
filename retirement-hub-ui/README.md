@@ -15,7 +15,13 @@ The commands above use the portable Node.js 24 LTS installed for this workspace.
 ## Prototype boundaries
 
 - Case-worker, broker and customer views read cases from the live Java API. No synthetic case fallback is shown when the service fails.
-- The customer view can read a case journey, save one maturity option, and record required document types.
+- The customer view can read a case journey, review/change a maturity option before completion, confirm an acknowledgement, and record required document types.
+- Pension pot amounts and option scenarios are deterministic synthetic demo data in the UI; they are not API valuations, personalised projections, quotes, guarantees or financial advice. Scenarios exclude relevant factors such as fees, tax, inflation and future contributions as described in the interface.
+- The customer option review requires an explicit acknowledgement before the choice is recorded by the API. The connected service allows a saved choice to be changed until the case is complete; a completed case cannot be changed.
+- A policy's T-12 annual statement email can be previewed from broker and case-worker case details. The preview uses the linked policy's maturity date and synthetic UI values; it is not sent. The backend does not provide or send an annual statement.
+- The live maturity workflow panel in the case-worker queue can be collapsed for demonstrations.
+- Broker details include a session-only call/follow-up note log. Notes are not sent to or persisted by the backend. Broker and case-worker follow-up can update a case to `AWAITING_CUSTOMER`; that status change does not send a customer message.
+- Broker and case-worker queues surface next actions and group cases by returned status: red for on-hold/cancelled, amber for awaiting customer/information or maturity package, green for completed, and neutral for other active stages. These colours are workflow indicators, not a separate risk assessment.
 - The role selector and customer case selector are demonstration controls, not authentication or authorization. The backend has no customer or broker ownership filtering, so every role can see all cases returned by the API.
 - The document picker sends the selected enum type and filename, but no file bytes. The backend records the enum and currently ignores the filename; it does not store, inspect, or review a file.
 - The backend maturity-package step generates an email body/recipient and updates case status. It does not deliver email. The scheduled job may advance eligible cases automatically.
