@@ -2,8 +2,10 @@ package com.example.demo.retirement.batch;
 
 import com.example.demo.retirement.api.dto.CaseRequest;
 import com.example.demo.retirement.api.dto.PolicyRequest;
+import com.example.demo.retirement.models.AdviceRecord;
 import com.example.demo.retirement.models.Case;
 import com.example.demo.retirement.models.CaseStatus;
+import com.example.demo.retirement.models.MaturityOption;
 import com.example.demo.retirement.models.OwnerType;
 import com.example.demo.retirement.service.CaseService;
 import com.example.demo.retirement.service.PolicyService;
@@ -54,11 +56,12 @@ class RetirementJourneyJobIntegrationTest {
                 .extracting("stepName")
                 .containsExactly("maturityAssessmentStep", "ownerDetectionStep", "maturityPackageEmailStep");
 
-        // Step 1 created the case, step 2 classified it, step 3 emailed the package.
+        // Step 1 created the case, step 2 classified it. Step 3 leaves it alone
+        // because the customer has not been advised yet.
         Case linked = caseService.getCaseByPolicyId("POL-BATCH-1");
         assertThat(linked.getOwnerType()).isEqualTo(OwnerType.CLE);
         assertThat(linked.getEmail()).isEqualTo("cle@cle.com");
-        assertThat(linked.getCaseStatus()).isEqualTo(CaseStatus.MATURITY_PACKAGE_SENT);
+        assertThat(linked.getCaseStatus()).isEqualTo(CaseStatus.CLE_OWNER_DETECTED);
     }
 
     @Test
@@ -91,8 +94,11 @@ class RetirementJourneyJobIntegrationTest {
 
     @Test
     void maturityPackageEmailStepCanRunInIsolation() {
-        caseService.createCase(new CaseRequest("Standalone email", CaseStatus.NON_CLE_OWNER_DETECTED,
-                "30d", "advisor-42", "desc", "POL-BATCH-EMAIL"));
+        Case standalone = caseService.createCase(new CaseRequest("Standalone email",
+                CaseStatus.NON_CLE_OWNER_DETECTED, "30d", "advisor-42", "desc", "POL-BATCH-EMAIL"));
+        standalone.setMaturityOption(MaturityOption.ANNUITY);
+        standalone.setAdviceRecord(new AdviceRecord(
+                MaturityOption.ANNUITY, "Advised", "advisor-42", "Telephone", Instant.now()));
 
         JobExecution execution = jobLauncherTestUtils.launchStep("maturityPackageEmailStep", uniqueParameters());
 

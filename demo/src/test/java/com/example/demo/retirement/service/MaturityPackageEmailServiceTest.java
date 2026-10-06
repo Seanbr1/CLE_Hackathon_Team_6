@@ -2,13 +2,16 @@ package com.example.demo.retirement.service;
 
 import com.example.demo.retirement.api.dto.CaseRequest;
 import com.example.demo.retirement.api.dto.MaturityPackageEmailResponse;
+import com.example.demo.retirement.models.AdviceRecord;
 import com.example.demo.retirement.models.Case;
 import com.example.demo.retirement.models.CaseStatus;
+import com.example.demo.retirement.models.MaturityOption;
 import com.example.demo.retirement.repo.CaseRepository;
 import com.example.demo.retirement.repo.InMemoryCaseRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -29,8 +32,25 @@ class MaturityPackageEmailServiceTest {
     }
 
     private Case givenCase(String policyId, String owner, CaseStatus status) {
+        Case created = caseService.createCase(new CaseRequest(
+                "Maturity detected for policy " + policyId, status, "30d", owner, "desc", policyId));
+        // Formalisation only happens after the customer has been advised.
+        created.setAdviceRecord(new AdviceRecord(
+                MaturityOption.ANNUITY, "Advised", owner, "Telephone", Instant.now()));
+        created.setMaturityOption(MaturityOption.ANNUITY);
+        return caseRepository.save(created);
+    }
+
+    private Case givenUnadvisedCase(String policyId, String owner, CaseStatus status) {
         return caseService.createCase(new CaseRequest(
                 "Maturity detected for policy " + policyId, status, "30d", owner, "desc", policyId));
+    }
+
+    @Test
+    void doesNotFormaliseACaseThatHasNotBeenAdvised() {
+        givenUnadvisedCase("POL-NO-ADVICE", "advisor-7", CaseStatus.NON_CLE_OWNER_DETECTED);
+
+        assertThat(emailService.sendMaturityPackages()).isEmpty();
     }
 
     @Test

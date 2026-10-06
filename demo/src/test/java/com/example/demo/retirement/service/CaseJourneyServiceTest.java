@@ -19,18 +19,25 @@ class CaseJourneyServiceTest {
 
     private CaseService caseService;
     private CaseJourneyService journeyService;
+    private AdviceService adviceService;
 
     @BeforeEach
     void setUp() {
         CaseRepository caseRepository = new InMemoryCaseRepository();
         caseService = new CaseService(caseRepository);
         journeyService = new CaseJourneyService(caseRepository, caseService);
+        adviceService = new AdviceService(caseRepository, caseService, journeyService);
     }
 
     private Case givenSentCase(String policyId) {
         return caseService.createCase(new CaseRequest(
                 "Maturity detected for policy " + policyId,
                 CaseStatus.MATURITY_PACKAGE_SENT, "30d", "advisor-7", "desc", policyId));
+    }
+
+    /** The advisor records the binding selection; the customer never selects. */
+    private void givenAdvisedCase(String caseId, MaturityOption option) {
+        adviceService.recordRecommendation(caseId, option, "Rationale", "Broker", "Telephone");
     }
 
     @Test
@@ -47,27 +54,7 @@ class CaseJourneyServiceTest {
     }
 
     @Test
-    void selectingAnOptionMovesCaseToAwaitingInformation() {
-        Case created = givenSentCase("POL-2");
-
-        CaseJourneyResponse journey =
-                journeyService.selectMaturityOption(created.getCaseId(), MaturityOption.ANNUITY);
-
-        assertThat(journey.retirementCase().getMaturityOption()).isEqualTo(MaturityOption.ANNUITY);
-        assertThat(journey.retirementCase().getCaseStatus()).isEqualTo(CaseStatus.AWAITING_INFORMATION);
-        assertThat(journey.message()).contains("Passport", "Bank details");
-    }
-
-    @Test
-    void rejectsMissingOption() {
-        Case created = givenSentCase("POL-3");
-
-        assertThatThrownBy(() -> journeyService.selectMaturityOption(created.getCaseId(), null))
-                .isInstanceOf(InvalidCaseRequestException.class);
-    }
-
-    @Test
-    void documentsCannotBeUploadedBeforeAnOptionIsChosen() {
+    void documentsCannotBeUploadedBeforeAnAdvisorRecordsAnOption() {
         Case created = givenSentCase("POL-4");
 
         assertThatThrownBy(() -> journeyService.uploadDocument(created.getCaseId(), RequiredDocument.PASSPORT))
@@ -78,7 +65,7 @@ class CaseJourneyServiceTest {
     @Test
     void firstDocumentKeepsCaseAwaitingInformation() {
         Case created = givenSentCase("POL-5");
-        journeyService.selectMaturityOption(created.getCaseId(), MaturityOption.LUMP_SUM);
+        givenAdvisedCase(created.getCaseId(), MaturityOption.LUMP_SUM);
 
         CaseJourneyResponse journey =
                 journeyService.uploadDocument(created.getCaseId(), RequiredDocument.PASSPORT);
@@ -92,7 +79,7 @@ class CaseJourneyServiceTest {
     @Test
     void caseCompletesOnlyWhenAllDocumentsAreUploaded() {
         Case created = givenSentCase("POL-7");
-        journeyService.selectMaturityOption(created.getCaseId(), MaturityOption.ANNUITY);
+        givenAdvisedCase(created.getCaseId(), MaturityOption.ANNUITY);
 
         journeyService.uploadDocument(created.getCaseId(), RequiredDocument.PASSPORT);
         CaseJourneyResponse journey =
@@ -107,7 +94,7 @@ class CaseJourneyServiceTest {
     @Test
     void reUploadingTheSameDocumentDoesNotComplete() {
         Case created = givenSentCase("POL-8");
-        journeyService.selectMaturityOption(created.getCaseId(), MaturityOption.REINVEST);
+        givenAdvisedCase(created.getCaseId(), MaturityOption.REINVEST);
 
         journeyService.uploadDocument(created.getCaseId(), RequiredDocument.PASSPORT);
         CaseJourneyResponse journey =
@@ -118,15 +105,12 @@ class CaseJourneyServiceTest {
     }
 
     @Test
-    void completedCaseCannotChangeItsOption() {
-        Case created = givenSentCase("POL-6");
-        journeyService.selectMaturityOption(created.getCaseId(), MaturityOption.REINVEST);
-        journeyService.uploadDocument(created.getCaseId(), RequiredDocument.PASSPORT);
-        journeyService.uploadDocument(created.getCaseId(), RequiredDocument.BANK_DETAILS);
+    void rejectsAMissingDocument() {
+        Case created = givenSentCase("POL-9");
+        givenAdvisedCase(created.getCaseId(), MaturityOption.ANNUITY);
 
-        assertThatThrownBy(() ->
-                journeyService.selectMaturityOption(created.getCaseId(), MaturityOption.ANNUITY))
+        assertThatThrownBy(() -> journeyService.uploadDocument(created.getCaseId(), null))
                 .isInstanceOf(InvalidCaseRequestException.class)
-                .hasMessageContaining("already complete");
+                .hasMessageContaining("document is required");
     }
 }

@@ -17,8 +17,10 @@ import java.util.Set;
  * Third workflow step.
  *
  * <p>Builds the default welcome email - including a link to the customer portal login page - for
- * every case whose owner has been detected, then advances the case to
- * {@link CaseStatus#MATURITY_PACKAGE_SENT}.</p>
+ * every advised case, then advances it to {@link CaseStatus#MATURITY_PACKAGE_SENT}.</p>
+ *
+ * <p>A case is only formalised once the customer has been advised and an option has been recorded,
+ * so the formal package confirms a decision rather than asking for one.</p>
  *
  * <p>Idempotent: only {@code CLE_OWNER_DETECTED} and {@code NON_CLE_OWNER_DETECTED} cases are
  * picked up, so a case is never emailed twice.</p>
@@ -26,9 +28,11 @@ import java.util.Set;
 @Service
 public class MaturityPackageEmailService {
 
-    /** Statuses eligible for the maturity package email. */
-    public static final Set<CaseStatus> EMAIL_READY_STATUSES =
-            EnumSet.of(CaseStatus.CLE_OWNER_DETECTED, CaseStatus.NON_CLE_OWNER_DETECTED);
+    /** Statuses eligible for the maturity package email, once advice has been given. */
+    public static final Set<CaseStatus> EMAIL_READY_STATUSES = EnumSet.of(
+            CaseStatus.CLE_OWNER_DETECTED,
+            CaseStatus.NON_CLE_OWNER_DETECTED,
+            CaseStatus.IN_PROGRESS);
 
     private final CaseRepository caseRepository;
     private final String portalLoginUrl;
@@ -41,13 +45,14 @@ public class MaturityPackageEmailService {
     }
 
     /**
-     * Generates and "sends" the welcome email for every owner-detected case.
+     * Generates and "sends" the welcome email for every advised, owner-detected case.
      *
      * @return one result per processed case, oldest case first
      */
     public List<MaturityPackageEmailResponse> sendMaturityPackages() {
         return caseRepository.findAll().stream()
                 .filter(c -> EMAIL_READY_STATUSES.contains(c.getCaseStatus()))
+                .filter(c -> c.getAdviceRecord() != null)
                 .sorted(Comparator.comparing(Case::getCreatedAt))
                 .map(this::sendMaturityPackage)
                 .toList();
@@ -61,6 +66,11 @@ public class MaturityPackageEmailService {
 
         retirementCase.setCaseStatus(CaseStatus.MATURITY_PACKAGE_SENT);
         retirementCase.setUpdatedAt(Instant.now());
+        retirementCase.recordEvent(com.example.demo.retirement.models.JourneyEvent.automated(
+                "ACTION_MATURITY_03",
+                "Formal maturity package issued confirming the advised option. "
+                        + "Customer asked for the documents still required.",
+                CaseStatus.MATURITY_PACKAGE_SENT));
         Case saved = caseRepository.save(retirementCase);
 
         return new MaturityPackageEmailResponse(
