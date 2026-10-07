@@ -1,155 +1,74 @@
-# Pension Product Comparison API
+# Retirement journey API
 
-This Spring Boot project includes a REST solution for customers to compare pension products across multiple insurers.
+Spring Boot (Java 17) backend for the CLE proactive maturity and retirement
+journey demo. It holds policies and maturity cases in memory, moves cases
+through the journey with a scheduled batch job, and records an audit trail of
+every automated and manual action.
 
-## What is included
-
-- Product catalog endpoint
-- Single product lookup endpoint
-- Comparison endpoint with weighted customer-focused scoring
-- In-memory sample pension products
-- Unit and integration tests
-
-## API endpoints
-
-- `GET /api/v1/pension-products/products`
-- `GET /api/v1/pension-products/{id}`
-- `POST /api/v1/pension-products/compare`
-
-With the configured context path, all URLs are prefixed by `/demo`.
-
-### Example compare request
-
-```json
-{
-  "productIds": ["PEN-1001", "PEN-1002", "PEN-1003"],
-  "currentAge": 35,
-  "retirementAge": 65,
-  "initialFundValueEuros": 50000,
-  "regularMonthlyContributionEuros": 400,
-  "singleAnnualContributionEuros": 2000,
-  "compoundAnnualGrowthRateBeforePrsaFeesPercent": 5.5,
-  "weights": {
-    "feeWeight": 0.4,
-    "creditRatingWeight": 0.3,
-    "flexibilityWeight": 0.2,
-    "digitalServicesWeight": 0.1
-  }
-}
-```
-
-Products are compared by:
-
-- Fund management fee impact until retirement using contributions and pre-fee growth assumptions
-- Financial robustness of insurer (credit rating)
-- Flexibility of fund selection
-- Digital services quality
-
-Compare response includes, for each ranked provider/product:
-
-- `projectedFeeCostUntilRetirementEuros`
-- `projectedFundValueAtRetirementEuros`
-
-The value from `compoundAnnualGrowthRateBeforePrsaFeesPercent` is user-set and applied consistently to each provider projection.
+All URLs are prefixed with the `/demo` context path, for example
+`http://localhost:8080/demo/api/v1/cases`.
 
 ## Run and test
-
-```bash
-./mvnw spring-boot:run
-./mvnw test
-```
-
-For Windows PowerShell:
 
 ```powershell
 .\mvnw.cmd spring-boot:run
 .\mvnw.cmd test
 ```
 
-## React web app
+Requires a Java 17 JDK on `PATH` or in `JAVA_HOME`.
 
-A React frontend is available in `frontend/`. On the home page it fetches all products and lets the user select products and compare with customer criteria.
+On start-up the three prototype scenarios are seeded (see
+`DemoDataService`):
 
-Run the frontend in a separate terminal:
+| Case | Customer | Scenario | Lane |
+|------|----------|----------|------|
+| `CASE-2027-10021` | Maria Schneider | Broker happy path | Not yet classified, then GREEN |
+| `CASE-2027-10044` | Thomas Weber | Direct client, one document missing | AMBER |
+| `CASE-2027-10078` | Sabine Hoffmann | Advisor ownership conflict | RED |
 
-```powershell
-Set-Location "C:\Users\PednekM\Documents\IntellijProjects\demo\demo\frontend"
-npm install
-npm run dev
-```
+`POST /api/v1/demo/reset` restores them at any time.
 
-Run frontend tests:
+## Journey
 
-```powershell
-Set-Location "C:\Users\PednekM\Documents\IntellijProjects\demo\demo\frontend"
-npm test
-```
+1. **Detect.** A policy maturing within 12 months gets a case.
+2. **Route.** Owner detection marks the case broker-managed or direct
+   (In-House Sales).
+3. **Advise.** The customer asks for advice; the advisor accepts the lead,
+   books an appointment and records the agreed option with a rationale.
+4. **Formalise.** Once advice is recorded, the formal maturity pack is issued.
+5. **Complete.** The customer records the required documents. Complete
+   responses go GREEN (straight through); missing documents go AMBER (one
+   targeted request); conflicts go RED (human review).
 
-## Agentic Retirement Journey
+The scheduled job (`RetirementJobScheduler`) runs maturity assessment, owner
+detection and formal pack issue automatically. Its interval is set by
+`retirement.batch.scheduler.fixed-delay-ms`.
 
-An agent-driven module builds a retirement journey and reinvestment plan for partners who are
-about a year away from retirement.
+## Endpoints
 
-### Agent crew
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET/POST` | `/api/v1/policies` | List or create policies |
+| `GET/PUT/DELETE` | `/api/v1/policies/{policyId}` | Read, update or delete a policy |
+| `POST` | `/api/v1/policies/{policyId}/maturity-assessment` | Open a case if the policy matures within 12 months |
+| `POST` | `/api/v1/policies/maturity-assessment` | Assess every policy |
+| `GET/POST` | `/api/v1/cases` | List or create cases |
+| `GET/PUT/DELETE` | `/api/v1/cases/{caseId}` | Read, update or delete a case |
+| `GET` | `/api/v1/cases/by-policy/{policyId}` | Find the case for a policy |
+| `POST` | `/api/v1/cases/owner-detection` | Route cases to broker or In-House Sales |
+| `POST` | `/api/v1/cases/maturity-package-email` | Issue the formal pack for advised cases |
+| `POST` | `/api/v1/cases/{caseId}/advice/request` | Customer asks for advice (optional non-binding preference) |
+| `POST` | `/api/v1/cases/{caseId}/advice/accept` | Advisor accepts the lead |
+| `POST` | `/api/v1/cases/{caseId}/advice/appointment` | Advisor books the appointment |
+| `POST` | `/api/v1/cases/{caseId}/advice/recommendation` | Advisor records the agreed option and rationale |
+| `GET` | `/api/v1/cases/{caseId}/journey` | Customer journey: options, documents, message |
+| `POST` | `/api/v1/cases/{caseId}/journey/documents` | Record a required document type; an `accountHolder` that does not match the policyholder holds the case for review |
+| `POST` | `/api/v1/cases/{caseId}/journey/exception/resolve` | Case worker resolves a document conflict and completes the case |
+| `GET` | `/api/v1/metrics/efficiency` | Lanes, touchpoints and distribution measures |
+| `POST` | `/api/v1/demo/reset` | Restore the seeded scenarios |
 
-Agents implement `RetirementAgent` and are auto-discovered by Spring, then executed in `order()`
-sequence by `RetirementJourneyOrchestrator` over a shared `AgentContext` blackboard:
+## Limitations
 
-1. **Household Profile Agent** - normalises partner data and projects the combined pot at the retirement date.
-2. **Risk Profiling Agent** - reconciles stated appetite with real risk capacity and sets the growth-asset ceiling.
-3. **Income & Drawdown Agent** - models lump sum, sustainable drawdown, income gap and pot longevity.
-4. **Reinvestment Allocation Agent** - designs liquidity / stability / growth (and optional annuity) buckets.
-5. **Compliance & Guardrail Agent** - applies tax, drawdown and suitability guardrails.
-6. **Journey Planner Agent** - sequences the final pre-retirement year and the first years of drawdown.
-
-Each agent returns an `AgentInsight`, so the full reasoning trace is returned to the UI.
-
-### Endpoints
-
-- `GET /api/v1/retirement-journey/agents`
-- `POST /api/v1/retirement-journey/plan`
-
-With the configured context path, the plan URL is `POST /demo/api/v1/retirement-journey/plan`.
-
-### Example plan request
-
-```json
-{
-  "householdName": "Murphy household",
-  "primaryPartner": {
-    "name": "Aoife",
-    "currentAge": 64,
-    "retirementAge": 65,
-    "pensionFundValueEuros": 420000,
-    "monthlyContributionEuros": 800,
-    "expectedStatePensionAnnualEuros": 14000
-  },
-  "secondaryPartner": {
-    "name": "Liam",
-    "currentAge": 65,
-    "retirementAge": 66,
-    "pensionFundValueEuros": 310000,
-    "monthlyContributionEuros": 600,
-    "expectedStatePensionAnnualEuros": 14000
-  },
-  "targetAnnualRetirementIncomeEuros": 55000,
-  "essentialAnnualSpendEuros": 36000,
-  "emergencyCashBufferEuros": 25000,
-  "riskAppetite": "MODERATE",
-  "goals": ["INCOME_STABILITY", "INFLATION_PROTECTION"],
-  "planningHorizonYears": 30,
-  "assumedAnnualInflationPercent": 2.0,
-  "wantsGuaranteedIncome": true
-}
-```
-
-The response contains the plan summary, income projection, bucketed reinvestment allocation,
-a 7-step journey, guardrails, next best actions and the agent reasoning trace.
-
-### UI
-
-The React app is now tabbed: **Compare products** and **Retirement journey**
-(`frontend/src/pages/RetirementJourneyPage.jsx`). The journey tab lists the agent crew, captures both
-partners' details and renders the generated plan, timeline and agent trace.
-
-> Projections are illustrative only and do not constitute financial advice.
+Data is in memory and lost on restart. The formal pack email is generated but
+not delivered. Document recording stores the document type only, not file
+contents. There is no authentication or ownership filtering.

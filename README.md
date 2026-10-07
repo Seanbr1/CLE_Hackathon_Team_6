@@ -9,20 +9,28 @@ backend for a Canada Life Europe retirement journey.
   broker and case-worker demonstration views.
 - [`demo/`](./demo/) — Spring Boot API and scheduled maturity workflow.
 
-The customer journey reads a case from the backend, saves one maturity option,
-and records the required document types. The backend currently stores data in
-memory. Document recording does not upload file contents, and the maturity
-package workflow generates email content but does not deliver email.
+The demo follows one maturity case from twelve months before maturity to
+payout across three roles: the CLE case worker (operations), the broker
+consultant who advises the customer, and the customer. The platform opens the
+case, routes it to the right advisor and issues the paperwork on its own, so
+people only spend time on advice and on the exceptions that need them.
 
-The UI also includes a review-and-acknowledgement step before saving a maturity
-choice, case email previews, and synthetic pension values for demonstration
-only. These sample values are not API valuations, personalised forecasts,
-quotes, guarantees or financial advice. Broker call notes are session-only and
-are not saved by the backend.
+The customer explores options and asks for advice; the advisor records the
+agreed option, after which the formal pack is issued and the customer records
+the required documents. Each case then sorts into a Green, Amber or Red
+processing lane, and an efficiency dashboard shows the manual work avoided.
+
+The backend stores data in memory. Document recording does not upload file
+contents, and the formal pack email is generated but not delivered. Pension
+values and projections are illustrative and are not financial advice. Broker
+call notes are session-only.
+
+Click **Demo flow** in the UI for a guided walkthrough of the journey.
 
 ## Run locally
 
-Run the backend in one terminal:
+Run the backend in one terminal (needs a Java 17 JDK on `PATH` or in
+`JAVA_HOME`):
 
 ```powershell
 Set-Location .\demo
@@ -42,8 +50,8 @@ with `VITE_CASE_API_BASE_URL` in `retirement-hub-ui/.env.local` if needed; do no
 put secrets in frontend environment variables.
 
 The backend API is available under `http://localhost:8080/demo/api/v1`. Its
-scheduled workflow may advance new cases to `MATURITY_PACKAGE_SENT`, after
-which the customer can choose an option and record required document types.
+scheduled job advances cases automatically, including issuing the formal pack
+once an advisor has recorded advice.
 
 ## Demo limitations
 

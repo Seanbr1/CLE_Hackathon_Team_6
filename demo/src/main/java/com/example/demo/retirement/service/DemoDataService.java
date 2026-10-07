@@ -97,7 +97,7 @@ public class DemoDataService {
                 maturity.minusMonths(7).minusYears(27),
                 maturity,
                 "PARTNER-10021",
-                "BROKER-MERIDIAN",
+                "BROKER-1027",
                 OwnerType.NON_CLE,
                 now.minus(180, ChronoUnit.DAYS),
                 now
@@ -105,12 +105,12 @@ public class DemoDataService {
 
         Case brokerCase = new Case(
                 SCENARIO_A_CASE_ID,
-                "Mary Doyle",
+                "Maria Schneider",
                 CaseStatus.NON_CLE_OWNER_DETECTED,
                 "30d",
-                "BROKER-MERIDIAN",
-                "Mary's policy matures on " + maturity
-                        + ". Broker-managed by Meridian Financial. Her annual statement already "
+                "BROKER-1027",
+                "Maria's policy matures on " + maturity
+                        + ". Broker-managed, so her broker advises her. Her annual statement already "
                         + "carried her maturity information.",
                 policyId,
                 now.minus(180, ChronoUnit.DAYS),
@@ -121,7 +121,7 @@ public class DemoDataService {
         brokerCase.setJourneyEvents(List.of(
                 event("ACTION_MATURITY_01", "Maturity case opened automatically a year before maturity.",
                         CaseStatus.MATURITY_DETECTED, 180),
-                event("ACTION_MATURITY_05", "Relationship is broker-managed. Qualified lead prepared for BROKER-MERIDIAN.",
+                event("ACTION_MATURITY_05", "Relationship is broker-managed. Qualified lead prepared for her broker.",
                         CaseStatus.NON_CLE_OWNER_DETECTED, 178),
                 event("ACTION_MATURITY_02", "Annual statement fell seven months before maturity. "
                                 + "Maturity information was added to it and the separate mailshot was suppressed.",
@@ -150,11 +150,11 @@ public class DemoDataService {
 
         Case directCase = new Case(
                 SCENARIO_C_CASE_ID,
-                "Tom Walsh",
+                "Thomas Weber",
                 CaseStatus.AWAITING_INFORMATION,
                 "14d",
                 "CLE-TEAM",
-                "Tom is serviced directly. In-House Sales advised a guaranteed income and it has been "
+                "Thomas is serviced directly. In-House Sales advised a guaranteed income and it has been "
                         + "formalised. His bank details are still outstanding.",
                 policyId,
                 now.minus(240, ChronoUnit.DAYS),
@@ -171,7 +171,7 @@ public class DemoDataService {
                 "Customer initially leaned towards a lump sum. After discussing the need for a "
                         + "predictable income to cover fixed outgoings, a guaranteed income was agreed "
                         + "as the better fit and recorded with the customer on the call.",
-                "In-House Sales · A. Byrne",
+                "In-House Sales · A. Becker",
                 "Telephone",
                 now.minus(48, ChronoUnit.DAYS)));
         directCase.setUploadedDocuments(List.of(RequiredDocument.PASSPORT));
@@ -186,13 +186,13 @@ public class DemoDataService {
                 manualEvent("ADVICE_REQUESTED", "Customer", "Advice requested through the portal. "
                                 + "Customer is leaning towards Lump sum (non-binding).",
                         CaseStatus.ADVICE_REQUESTED, 56),
-                manualEvent("LEAD_ACCEPTED", "In-House Sales · A. Byrne",
+                manualEvent("LEAD_ACCEPTED", "In-House Sales · A. Becker",
                         "Qualified lead accepted. Advisor has taken ownership of the conversation.",
                         CaseStatus.ADVICE_REQUESTED, 55),
-                manualEvent("APPOINTMENT_BOOKED", "In-House Sales · A. Byrne",
+                manualEvent("APPOINTMENT_BOOKED", "In-House Sales · A. Becker",
                         "Advice appointment booked by Telephone.",
                         CaseStatus.APPOINTMENT_BOOKED, 52),
-                manualEvent("ADVICE_COMPLETED", "In-House Sales · A. Byrne",
+                manualEvent("ADVICE_COMPLETED", "In-House Sales · A. Becker",
                         "Advice given and Annuity recorded on the customer's behalf. "
                                 + "Rationale captured against the case.",
                         CaseStatus.AWAITING_INFORMATION, 48),
@@ -226,11 +226,11 @@ public class DemoDataService {
 
         Case exceptionCase = new Case(
                 SCENARIO_E_CASE_ID,
-                "Siobh\u00e1n Byrne",
+                "Sabine Hoffmann",
                 CaseStatus.ON_HOLD,
                 "5d",
                 "UNASSIGNED",
-                "Siobh\u00e1n's policy matures soon, but we cannot work out who advises her. "
+                "Sabine's policy matures soon, but we cannot work out who advises her. "
                         + "The journey is stopped until a person resolves it.",
                 policyId,
                 now.minus(270, ChronoUnit.DAYS),

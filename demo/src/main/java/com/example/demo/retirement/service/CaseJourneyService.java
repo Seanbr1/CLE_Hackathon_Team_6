@@ -50,6 +50,15 @@ public class CaseJourneyService {
      * document has been supplied.
      */
     public CaseJourneyResponse uploadDocument(String caseId, RequiredDocument document) {
+        return uploadDocument(caseId, document, null);
+    }
+
+    /**
+     * Accepts a customer document, checking the account holder on bank details against the
+     * policyholder. A mismatch is a conflict the platform must not resolve on its own, so the
+     * case is held in the RED lane for CLE Operations instead of completing.
+     */
+    public CaseJourneyResponse uploadDocument(String caseId, RequiredDocument document, String accountHolder) {
         if (document == null) {
             throw new InvalidCaseRequestException(
                     "document is required and must be one of " + REQUIRED_DOCUMENTS);
@@ -68,6 +77,27 @@ public class CaseJourneyService {
 
         boolean allDocumentsReceived =
                 retirementCase.getUploadedDocuments().containsAll(REQUIRED_DOCUMENTS);
+
+        String conflict = accountHolderConflict(retirementCase, document, accountHolder);
+        boolean alreadyHeld = hasOpenException(retirementCase);
+        if (conflict != null || alreadyHeld) {
+            if (conflict != null) retirementCase.setExceptionReason(conflict);
+            retirementCase.setCaseStatus(CaseStatus.ON_HOLD);
+            retirementCase.setUpdatedAt(Instant.now());
+            retirementCase.recordEvent(JourneyEvent.manual(
+                    "RESPONSE_RECEIVED",
+                    "Customer",
+                    document.getLabel() + " recorded through the portal.",
+                    CaseStatus.ON_HOLD));
+            if (conflict != null) {
+                retirementCase.recordEvent(JourneyEvent.automated(
+                        "VALIDATION_CONFLICT",
+                        "Validation found a conflict: " + conflict + " Automatic payment withheld; "
+                                + "case routed to CLE Operations with the evidence attached.",
+                        CaseStatus.ON_HOLD));
+            }
+            return describe(caseRepository.save(retirementCase));
+        }
 
         retirementCase.setCaseStatus(
                 allDocumentsReceived ? CaseStatus.COMPLETED : CaseStatus.AWAITING_INFORMATION);
@@ -95,6 +125,59 @@ public class CaseJourneyService {
         }
 
         return describe(caseRepository.save(retirementCase));
+    }
+
+    /**
+     * A case worker clears a validation exception. The review is recorded as manual
+     * operational work; once every document is in, the case completes.
+     */
+    public CaseJourneyResponse resolveException(String caseId, String note, String actor) {
+        Case retirementCase = caseService.getCase(caseId);
+
+        if (!hasOpenException(retirementCase)) {
+            throw new InvalidCaseRequestException("Case " + caseId + " has no open exception to resolve");
+        }
+        if (retirementCase.getMaturityOption() == null) {
+            throw new InvalidCaseRequestException(
+                    "Case " + caseId + " is held before advice; only document conflicts can be resolved here");
+        }
+
+        retirementCase.setExceptionReason(null);
+        boolean allDocumentsReceived =
+                retirementCase.getUploadedDocuments().containsAll(REQUIRED_DOCUMENTS);
+        retirementCase.setCaseStatus(
+                allDocumentsReceived ? CaseStatus.COMPLETED : CaseStatus.AWAITING_INFORMATION);
+        retirementCase.setUpdatedAt(Instant.now());
+        retirementCase.recordEvent(JourneyEvent.manual(
+                "EXCEPTION_RESOLVED",
+                actor == null || actor.isBlank() ? "Case worker" : actor.trim(),
+                note == null || note.isBlank() ? "Exception reviewed and approved." : note.trim(),
+                retirementCase.getCaseStatus()));
+        if (allDocumentsReceived) {
+            retirementCase.recordEvent(JourneyEvent.automated(
+                    "CASE_COMPLETED",
+                    "Exception cleared. Case completed and released for payment at maturity.",
+                    CaseStatus.COMPLETED));
+        }
+
+        return describe(caseRepository.save(retirementCase));
+    }
+
+    private static boolean hasOpenException(Case retirementCase) {
+        return retirementCase.getExceptionReason() != null && !retirementCase.getExceptionReason().isBlank();
+    }
+
+    /** A bank account in another name than the policyholder's, or {@code null} when consistent. */
+    private static String accountHolderConflict(Case retirementCase, RequiredDocument document, String accountHolder) {
+        if (document != RequiredDocument.BANK_DETAILS || accountHolder == null || accountHolder.isBlank()) {
+            return null;
+        }
+        String policyholder = retirementCase.getCaseName() == null ? "" : retirementCase.getCaseName().trim();
+        if (accountHolder.trim().equalsIgnoreCase(policyholder)) {
+            return null;
+        }
+        return "the bank account holder (" + accountHolder.trim() + ") does not match the policyholder ("
+                + policyholder + ").";
     }
 
     /** Shared with {@link AdviceService} so advisor actions return the same shape. */
@@ -127,6 +210,7 @@ public class CaseJourneyService {
                     + "Your advisor will confirm your option with you.";
             case IN_PROGRESS -> "Your advisor has recorded your option. "
                     + "We are preparing your formal maturity pack now.";
+            case ON_HOLD -> "We are checking one of your documents. We will contact you if we need anything further.";
             default -> "Review your options, then ask your advisor to talk them through with you.";
         };
     }

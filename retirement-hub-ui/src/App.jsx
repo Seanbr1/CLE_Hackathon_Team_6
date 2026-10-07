@@ -14,6 +14,7 @@ import {
   recordRecommendation,
   requestAdvice,
   resetDemoData,
+  resolveCaseException,
   updateCase as updateBackendCase,
 } from './api/caseApi'
 import './App.css'
@@ -29,8 +30,97 @@ const documentLabels = {
   BANK_DETAILS: 'Bank details',
 }
 
+/** Plain-language case status for staff screens (broker and case worker). */
+const staffStatusLabels = {
+  NEW: 'New',
+  MATURITY_DETECTED: 'Maturity detected',
+  CLE_OWNER_DETECTED: 'Routed to In-House Sales',
+  NON_CLE_OWNER_DETECTED: 'Routed to broker',
+  ADVICE_REQUESTED: 'Advice requested',
+  APPOINTMENT_BOOKED: 'Appointment booked',
+  IN_PROGRESS: 'Advice recorded',
+  MATURITY_PACKAGE_SENT: 'Formal pack issued',
+  AWAITING_INFORMATION: 'Missing information',
+  AWAITING_CUSTOMER: 'Awaiting customer',
+  ON_HOLD: 'Human review',
+  COMPLETED: 'Completed',
+  CANCELLED: 'Cancelled',
+}
+
+/** What the customer sees as their status. */
+const customerStatusLabels = {
+  NEW: 'Explore your options',
+  MATURITY_DETECTED: 'Explore your options',
+  CLE_OWNER_DETECTED: 'Explore your options',
+  NON_CLE_OWNER_DETECTED: 'Explore your options',
+  ADVICE_REQUESTED: 'Advice requested',
+  APPOINTMENT_BOOKED: 'Advice appointment booked',
+  IN_PROGRESS: 'Option agreed with your advisor',
+  MATURITY_PACKAGE_SENT: 'Documents needed',
+  AWAITING_INFORMATION: 'Documents needed',
+  AWAITING_CUSTOMER: 'We need something from you',
+  ON_HOLD: 'Under review',
+  COMPLETED: 'All done',
+  CANCELLED: 'Closed',
+}
+
+function staffStatus(status) {
+  return staffStatusLabels[String(status || '').toUpperCase()] || status || 'Unknown'
+}
+
+function customerStatus(status) {
+  return customerStatusLabels[String(status || '').toUpperCase()] || 'In progress'
+}
+
+/** Owner codes from the policy system, shown as who actually advises the client. */
+const ownerLabels = {
+  'BROKER-1027': 'Broker',
+  'EXTERNAL-BROKER': 'External broker',
+  'CLE-TEAM': 'In-House Sales',
+  CLE: 'In-House Sales',
+  UNASSIGNED: 'Not assigned',
+}
+
+const ownerTypeLabels = {
+  NON_CLE: 'Broker-managed',
+  CLE: 'Direct (In-House Sales)',
+}
+
+/** Audit action codes follow the spec's action framework (5.3). */
+const auditActionLabels = {
+  ACTION_MATURITY_01: 'Journey opened',
+  ACTION_MATURITY_02: 'Annual statement check',
+  ACTION_MATURITY_03: 'Formal maturity pack',
+  ACTION_MATURITY_04: 'Targeted reminder',
+  ACTION_MATURITY_05: 'Advisor routing',
+  ADVICE_REQUESTED: 'Advice requested',
+  LEAD_ACCEPTED: 'Lead accepted',
+  APPOINTMENT_BOOKED: 'Appointment booked',
+  ADVICE_COMPLETED: 'Advice recorded',
+  RESPONSE_RECEIVED: 'Customer response',
+  STP_COMPLETED: 'Straight-through completion',
+  MANUAL_REVIEW: 'Human review',
+  VALIDATION_CONFLICT: 'Validation conflict',
+  EXCEPTION_RESOLVED: 'Exception resolved',
+  CASE_COMPLETED: 'Case completed',
+}
+
+function firstName(fullName) {
+  return String(fullName || '').trim().split(/\s+/)[0] || 'the client'
+}
+
+function initials(fullName) {
+  return String(fullName || '').trim().split(/\s+/).map((part) => part.charAt(0)).join('').slice(0, 2).toUpperCase() || '?'
+}
+
+/** Name read from Maria's bank details in the demo: her married name, which validation flags. */
+const DEMO_ACCOUNT_HOLDER = 'Maria Schneider-Wolf'
+
+/** Pre-filled case worker note for resolving that conflict. */
+const DEFAULT_REVIEW_NOTE = 'Name change confirmed against the passport on file. The account belongs to the policyholder.'
+
 /** Pre-filled so the presenter can record advice with a single click. */
-const DEFAULT_RATIONALE = 'Mary wanted the full cash sum, but most of it was earmarked for day-to-day '
+const DEFAULT_RATIONALE = 'Maria wanted the full cash sum, but most of it was earmarked for day-to-day '
   + 'living. A guaranteed income covers her fixed outgoings for life, so we agreed an annuity.'
 
 function StatusPill({ children, tone = 'neutral' }) {
@@ -61,7 +151,7 @@ const laneMeta = {
 
 function LanePill({ lane, short = false }) {
   const meta = laneMeta[lane]
-  if (!meta) return <StatusPill tone="neutral">Awaiting response</StatusPill>
+  if (!meta) return <span className="lane-none" title="Sorted into a lane once the customer responds">—</span>
   return <StatusPill tone={meta.tone}>{short ? meta.short : meta.label}</StatusPill>
 }
 
@@ -80,11 +170,9 @@ function mapBackendCase(record, index) {
     id: record.caseId,
     customer: record.caseName,
     policy: record.policyId || 'Not provided',
-    status: record.caseStatus.toLowerCase().split('_').map(
-      (word) => word.charAt(0).toUpperCase() + word.slice(1),
-    ).join(' '),
+    status: staffStatus(record.caseStatus),
     backendStatus: record.caseStatus,
-    detail: record.description || 'No description provided by the case service.',
+    detail: record.description || 'No summary yet.',
     owner: record.owner || 'Unassigned',
     ownerType: record.ownerType || 'Not provided',
     email: record.email || 'Not provided',
@@ -107,158 +195,153 @@ function mapBackendCase(record, index) {
 
 /** Seeded prototype scenario used as the worked example. */
 const SCENARIO_A = 'CASE-2027-10021'
+/** The amber and red scenarios, held back until the demo compares lanes. */
+const OTHER_SCENARIOS = ['CASE-2027-10044', 'CASE-2027-10078']
 
-/**
- * Ordered presenter script for the guided demo. Each step drives the real
- * application into the view the named audience would see at that point in the
- * timeline, selecting the scenario case the step is about, so the demo shows
- * live screens and live state rather than mock-ups.
- */
 /** Who the audience is watching at each step. */
 const personas = {
-  customer: { name: 'Mary Doyle', role: 'Customer', tone: 'customer' },
-  broker: { name: 'Meridian Financial', role: 'Her broker', tone: 'broker' },
-  caseworker: { name: 'Canada Life', role: 'Operations', tone: 'caseworker' },
+  customer: { name: 'Maria Schneider', role: 'Customer portal', tone: 'customer' },
+  broker: { name: 'Broker consultant', role: 'Broker workspace', tone: 'broker' },
+  caseworker: { name: 'CLE Operations', role: 'Case worker', tone: 'caseworker' },
 }
 
+/**
+ * The guided demo, written for a non-technical audience watching one screen.
+ * Each chapter puts Maria's case into the state it needs on entry (`requires`),
+ * so the driver can move forwards or backwards without hitting an error.
+ * Live chapters highlight the one thing to click and say what it did.
+ */
 const demoFlowSteps = [
   {
-    id: 'detect',
-    when: 'A year before maturity',
-    title: 'We spot it before anyone asks',
+    id: 'slide-solution',
+    when: 'Presentation · 1 of 2',
+    title: 'Our solution',
+    line: 'Retirement Hub: every maturity handled early, only exceptions need a person.',
     role: 'caseworker',
     caseId: SCENARIO_A,
-    page: 'Operations queue — every maturity we know about.',
-    doNow: 'Open Mary’s case live, or point at the one already in the queue.',
-    summary: 'A year out, the policy raises its own case. Nobody had to remember.',
-    createCase: true,
     caseworkerPage: 'queue',
+    requires: 'NON_CLE_OWNER_DETECTED',
+    slide: 'solution',
   },
   {
-    id: 'advisor-routing',
-    when: 'A year before maturity',
-    title: 'We work out who advises her',
+    id: 'slide-opportunity',
+    when: 'Presentation · 2 of 2',
+    title: 'The opportunity',
+    line: 'Maturities nearly double by 2034. Next: the live platform.',
     role: 'caseworker',
     caseId: SCENARIO_A,
-    page: 'Mary’s case — who owns the relationship.',
-    doNow: 'Point at the broker: Meridian Financial, decided automatically.',
-    summary: 'Mary is a broker client, so the lead belongs to her broker — not to us.',
-    caseworkerPage: 'case',
+    caseworkerPage: 'queue',
+    requires: 'NON_CLE_OWNER_DETECTED',
+    slide: 'opportunity',
   },
   {
-    id: 'annual-statement',
-    when: 'Seven months before',
-    title: 'Her yearly statement does the work',
+    id: 'starts',
+    when: '12 months before maturity',
+    title: 'Case opened automatically',
+    line: 'The platform detects the upcoming maturity, opens a case and routes it to the responsible broker.',
+    role: 'caseworker',
+    caseId: SCENARIO_A,
+    caseworkerPage: 'case',
+    requires: 'NON_CLE_OWNER_DETECTED',
+  },
+  {
+    id: 'statement',
+    when: '7 months before maturity',
+    title: 'Maturity information in the annual statement',
+    line: 'The scheduled annual statement carries Maria’s maturity options. No separate mailing is issued.',
     role: 'customer',
     caseId: SCENARIO_A,
-    page: 'Mary’s portal — the statement she was getting anyway.',
-    doNow: 'Point out we added maturity to a letter she already receives.',
-    summary: 'No extra mailing. We used the statement she was already due.',
     customerFocus: 'annual-statement',
+    requires: 'NON_CLE_OWNER_DETECTED',
+    highlight: '.statement-next-step .button',
   },
   {
-    id: 'request-advice',
-    when: 'Six months before',
-    title: 'Mary asks for advice',
+    id: 'ask',
+    when: '6 months before maturity',
+    title: 'Customer requests advice',
+    line: 'Maria reviews her options online. They are presented as information only; the decision is made with her broker.',
+    done: 'Request delivered to the broker as a qualified lead.',
     role: 'customer',
     caseId: SCENARIO_A,
-    status: 'NON_CLE_OWNER_DETECTED',
+    requires: 'NON_CLE_OWNER_DETECTED',
     advancesTo: 'ADVICE_REQUESTED',
-    live: true,
-    page: 'Mary’s portal — her options, with nothing to sign.',
-    doNow: 'Open an option, then ask her broker to talk it through.',
-    summary: 'She can read about her options, but she cannot pick one here. That is deliberate.',
+    highlight: '.advice-cta .button',
+    scrollToHighlight: true,
   },
   {
-    id: 'lead-arrives',
-    when: 'Six months before',
-    title: 'It lands with her broker',
+    id: 'advise',
+    when: '6 months before maturity',
+    title: 'Broker-led advice',
+    line: 'The broker picks up the lead, schedules the advice conversation and records the advised option.',
+    done: 'Advice recorded. Formal documentation is issued automatically.',
     role: 'broker',
-    caseId: SCENARIO_A,
-    status: 'ADVICE_REQUESTED',
-    page: 'Broker queue — Meridian’s clients, most urgent first.',
-    doNow: 'Find Mary and click “Pick up lead”.',
-    summary: 'No email, no handover. The request appears in her broker’s own list.',
     brokerPage: 'list',
-  },
-  {
-    id: 'broker-workspace',
-    when: 'Six months before',
-    title: 'Everything already in one place',
-    role: 'broker',
     caseId: SCENARIO_A,
-    status: 'ADVICE_REQUESTED',
-    advancesTo: 'APPOINTMENT_BOOKED',
-    live: true,
-    page: 'Advice workspace — Mary’s details and her options together.',
-    doNow: 'Accept the lead, then book the appointment.',
-    summary: 'This is the screen that saves the broker the most time.',
-    brokerPage: 'case',
-  },
-  {
-    id: 'broker-advises',
-    when: 'Six months before',
-    title: 'The broker advises Mary',
-    role: 'broker',
-    caseId: SCENARIO_A,
-    status: 'APPOINTMENT_BOOKED',
+    requires: 'ADVICE_REQUESTED',
     advancesTo: 'IN_PROGRESS',
-    live: true,
-    page: 'Advice workspace — record the advice.',
-    doNow: 'The option and reason are pre-filled. Just click Record.',
-    summary: 'The broker decides with Mary, and the reason is saved at the same moment.',
-    brokerPage: 'case',
+    highlight: '.pick-up-lead, .process-step.current .button-primary',
+    scrollToHighlight: true,
   },
   {
-    id: 'formalise',
-    when: 'Five months before',
-    title: 'Now we make it official',
-    role: 'caseworker',
-    caseId: SCENARIO_A,
-    status: 'IN_PROGRESS',
-    advancesTo: 'MATURITY_PACKAGE_SENT',
-    live: true,
-    page: 'Mary’s case — issue the formal pack.',
-    doNow: 'Click “Issue the formal pack”.',
-    summary: 'Paperwork comes last, and it confirms a decision instead of asking for one.',
-    caseworkerPage: 'case',
-  },
-  {
-    id: 'documents',
-    when: 'Four months before',
-    title: 'Mary sends what we need',
+    id: 'paperwork',
+    when: '5 months before maturity',
+    title: 'Formal pack and documents',
+    line: 'The formal pack is issued automatically. Maria submits the two required documents online.',
+    done: 'Validation flagged a mismatch on the bank details. Payment is held for review.',
+    doneTone: 'warn',
     role: 'customer',
     caseId: SCENARIO_A,
-    status: 'MATURITY_PACKAGE_SENT',
-    advancesTo: 'COMPLETED',
-    live: true,
-    page: 'Mary’s portal — her agreed option and the documents for it.',
-    doNow: 'Record both documents.',
-    summary: 'She only sends documents once her choice is already agreed.',
+    requires: 'MATURITY_PACKAGE_SENT',
+    advancesTo: 'ON_HOLD',
+    highlight: '.document-upload-button',
+    scrollToHighlight: true,
   },
   {
-    id: 'lanes',
-    when: 'At any point',
-    title: 'Three clients, three outcomes',
-    role: 'caseworker',
-    page: 'Operations — how every case sorts itself.',
-    doNow: 'Compare the three: only the red one needs a person.',
-    summary: 'This is not a date on the timeline. Every case sorts into one of three lanes as soon as we have an answer.',
-    caseworkerPage: 'lanes',
-  },
-  {
-    id: 'maturity',
-    when: 'Maturity day',
-    title: 'Mary is ready to be paid',
+    id: 'exception',
+    when: '5 months before maturity',
+    title: 'Exception handled by CLE Operations',
+    line: 'Only the exception reaches a case worker, with the evidence already assembled. One review releases the case.',
+    done: 'Exception resolved. The case is complete and ready for payment at maturity.',
     role: 'caseworker',
     caseId: SCENARIO_A,
-    status: 'COMPLETED',
-    page: 'Mary’s case — done, and done early.',
-    doNow: 'Her case was finished months ago. Nobody chased her.',
-    summary: 'Everything was settled well before today, with no operational handling at all.',
-    caseworkerPage: 'case',
+    caseworkerPage: 'queue',
+    requires: 'ON_HOLD',
+    advancesTo: 'COMPLETED',
+    highlight: '.case-row-focus .table-action, .exception-approve-button',
+    scrollToHighlight: true,
+  },
+  {
+    id: 'timeline',
+    when: 'At maturity',
+    title: 'Activity by participant',
+    line: 'Automation handled the routine work. CLE Operations made one targeted intervention, compared with around nine today.',
+    role: 'caseworker',
+    caseId: SCENARIO_A,
+    caseworkerPage: 'timeline',
+    requires: 'COMPLETED',
+  },
+  {
+    id: 'next',
+    when: 'Roadmap',
+    title: 'Next steps',
+    line: 'From prototype to pilot: German-language journeys, agent-assisted operations and core-system integration.',
+    role: 'caseworker',
+    caseId: SCENARIO_A,
+    caseworkerPage: 'timeline',
+    requires: 'COMPLETED',
+    slide: 'next',
   },
 ]
+
+/** Where a status sits in Maria's journey, for preparing chapters. */
+const journeyOrder = [
+  'NEW', 'MATURITY_DETECTED', 'NON_CLE_OWNER_DETECTED', 'ADVICE_REQUESTED', 'APPOINTMENT_BOOKED',
+  'IN_PROGRESS', 'MATURITY_PACKAGE_SENT', 'AWAITING_INFORMATION', 'ON_HOLD', 'COMPLETED',
+]
+
+function journeyRank(status) {
+  return journeyOrder.indexOf(status === 'CLE_OWNER_DETECTED' ? 'NON_CLE_OWNER_DETECTED' : status)
+}
 
 /** Loads the policy linked to a case, re-fetching whenever the policy changes. */
 function usePolicyDetails(policyId) {
@@ -295,6 +378,13 @@ function App() {
   const [brokerPage, setBrokerPage] = useState('list')
   const [demoStepIndex, setDemoStepIndex] = useState(null)
   const [customerFocus, setCustomerFocus] = useState('')
+  const [optionReview, setOptionReview] = useState(null)
+  // Brief card shown when the demo moves to another person.
+  const [handoff, setHandoff] = useState(null)
+  // Chapter preparation: puts Maria's case into the state a chapter needs.
+  const [prepState, setPrepState] = useState({ busy: false, error: '' })
+  const prepToken = useRef(0)
+  const scrolledTarget = useRef(null)
   const [caseLoadState, setCaseLoadState] = useState({
     status: 'loading',
     cases: [],
@@ -317,7 +407,14 @@ function App() {
     actionBusy: false,
   })
   const displayedCases = caseLoadState.cases
+  const demoStep = demoStepIndex === null ? null : demoFlowSteps[demoStepIndex]
+  // The demo follows Maria alone until the result. Cases created live still show.
+  const demoFocused = Boolean(demoStep)
+  const viewCases = demoFocused
+    ? caseLoadState.cases.filter((item) => !OTHER_SCENARIOS.includes(item.id))
+    : caseLoadState.cases
   const selectedCase = displayedCases.find((item) => item.id === selectedCaseId)
+    ?? displayedCases.find((item) => item.id === SCENARIO_A)
     ?? displayedCases[0]
   const journeyCaseId = role === 'customer' ? selectedCase?.id : ''
   const journeyRequestKey = journeyCaseId ? `${journeyCaseId}:${journeyReload}` : ''
@@ -411,7 +508,7 @@ function App() {
 
   const runLiveJourney = async (policyInput) => {
     setWorkflowBusy(true)
-    setWorkflowResult({ kind: 'info', message: 'Creating policy and assessing maturity…' })
+    setWorkflowResult({ kind: 'info', message: 'Creating the policy and checking its maturity date…' })
     let createdPolicyId = ''
     let currentStep = 'policy creation'
     try {
@@ -423,7 +520,7 @@ function App() {
         await refreshCases()
         setWorkflowResult({
           kind: 'warning',
-          message: `Policy ${policy.policyId} was created, but it did not meet the backend’s one-year maturity rule. No case was created.`,
+          message: `Policy ${policy.policyId} was created, but it does not mature within the next 12 months, so no case was opened yet.`,
         })
         return
       }
@@ -440,12 +537,12 @@ function App() {
       setSelectedCaseId(assessment.linkedCase.caseId)
 
       const currentCase = mappedCases.find((item) => item.id === assessment.linkedCase.caseId)
-      const classification = ownerResult
-        ? ` Owner detection classified this as ${ownerResult.ownerType} and assigned ${ownerResult.email}; no email was sent.`
-        : ` Owner detection was already applied; the case is ${currentCase?.backendStatus ?? assessment.linkedCase.caseStatus}.`
+      const routing = ownerResult
+        ? ` It was routed to ${ownerResult.ownerType === 'NON_CLE' ? 'the broker' : 'In-House Sales'} automatically.`
+        : ` It is ${staffStatus(currentCase?.backendStatus ?? assessment.linkedCase.caseStatus)}.`
       setWorkflowResult({
         kind: 'success',
-        message: `Policy ${policy.policyId} was assessed and case ${assessment.linkedCase.caseId} is now in the live queue.${classification} The scheduled backend job may generate a maturity-package email body, but does not deliver email.`,
+        message: `Case ${assessment.linkedCase.caseId} opened for policy ${policy.policyId} and added to the queue.${routing}`,
       })
     } catch (error) {
       const cause = error instanceof Error ? error.message : 'Unexpected error.'
@@ -476,7 +573,7 @@ function App() {
     try {
       await updateBackendCase(item.id, { caseStatus: 'AWAITING_CUSTOMER' })
       await refreshCases()
-      notify('Case updated in the backend: awaiting customer.')
+      notify('Case marked as waiting on the customer.')
     } catch (error) {
       setCaseActionError(error instanceof Error ? error.message : 'Could not update this case.')
     } finally {
@@ -514,8 +611,8 @@ function App() {
   const submitAdviceRequest = (preference) => mutateJourney(
     (caseId) => requestAdvice(caseId, preference),
   )
-  const submitJourneyDocument = (document, fileName) => mutateJourney(
-    (caseId) => recordJourneyDocument(caseId, document, fileName),
+  const submitJourneyDocument = (document, fileName, accountHolder) => mutateJourney(
+    (caseId) => recordJourneyDocument(caseId, document, fileName, accountHolder),
   )
 
   // Advisor-side actions. These refresh the case list so the broker queue,
@@ -539,21 +636,30 @@ function App() {
 
   const advisorAcceptLead = (advisor) => runAdvisorAction(
     (caseId) => acceptLead(caseId, advisor),
-  ).then((journey) => {
-    if (journey) notify('Lead accepted. You now own this conversation.')
-    return journey
-  })
+  )
 
-  const advisorBookAppointment = (details) => runAdvisorAction(
+  const advisorScheduleConversation = (details) => runAdvisorAction(
     (caseId) => bookAppointment(caseId, details),
+  )
+
+  const caseworkerResolveException = (note) => runAdvisorAction(
+    (caseId) => resolveCaseException(caseId, note),
   ).then((journey) => {
-    if (journey) notify('Advice appointment booked.')
+    if (journey) notify('Exception resolved and the case released.')
     return journey
   })
 
-  const advisorRecordAdvice = (details) => runAdvisorAction(
-    (caseId) => recordRecommendation(caseId, details),
-  ).then((journey) => {
+  const advisorRecordAdvice = (details) => runAdvisorAction(async (caseId) => {
+    if (!selectedCase.leadAcceptedAt) await acceptLead(caseId, details.advisor)
+    if (!selectedCase.appointmentAt) {
+      await bookAppointment(caseId, {
+        appointmentAt: new Date().toISOString(),
+        advisor: details.advisor,
+        channel: details.channel,
+      })
+    }
+    return recordRecommendation(caseId, details)
+  }).then((journey) => {
     if (journey) notify('Advice recorded against the case.')
     return journey
   })
@@ -566,7 +672,7 @@ function App() {
       await issueMaturityPackages()
       await refreshCases()
       setJourneyReload((count) => count + 1)
-      notify('Formal maturity pack issued. Mary has been asked for her documents.')
+      notify('Formal maturity pack issued. Maria has been asked for her documents.')
     } catch (error) {
       setCaseActionError(error instanceof Error ? error.message : 'Could not issue the formal pack.')
     } finally {
@@ -576,20 +682,105 @@ function App() {
 
   const selectRole = (nextRole) => {
     setRole(nextRole)
+    setCustomerFocus('')
+    window.scrollTo({ top: 0 })
   }
 
-  const demoStep = demoStepIndex === null ? null : demoFlowSteps[demoStepIndex]
+  /**
+   * Puts Maria's case into the state a chapter needs, using the real
+   * endpoints. A case that is further on than the chapter is rewound by
+   * restoring the demo data. A newer chapter change cancels an older one.
+   */
+  const prepareForStep = async (step) => {
+    if (!step?.requires || !step.caseId) return
+    const token = prepToken.current + 1
+    prepToken.current = token
+    const stale = () => prepToken.current !== token
+    setPrepState({ busy: true, error: '' })
+    try {
+      const find = (records) => records.find((item) => item.caseId === step.caseId)
+      let records = await fetchCases()
+      let current = find(records)
+      if (current && journeyRank(current.caseStatus) > journeyRank(step.advancesTo || step.requires)) {
+        if (stale()) return
+        records = await resetDemoData()
+        current = find(records)
+      }
+      for (let guard = 0; guard < 10 && current; guard += 1) {
+        if (stale()) return
+        const status = current.caseStatus
+        if (journeyRank(status) === -1 || journeyRank(status) >= journeyRank(step.requires)) break
+        if (status === 'NON_CLE_OWNER_DETECTED' || status === 'CLE_OWNER_DETECTED') {
+          await requestAdvice(step.caseId, 'LUMP_SUM')
+        } else if (status === 'ADVICE_REQUESTED' || status === 'APPOINTMENT_BOOKED') {
+          if (!current.leadAcceptedAt) await acceptLead(step.caseId, 'Broker')
+          if (!current.appointmentAt) {
+            await bookAppointment(step.caseId, {
+              appointmentAt: new Date().toISOString(), advisor: 'Broker', channel: 'Telephone',
+            })
+          }
+          await recordRecommendation(step.caseId, {
+            recommendedOption: 'ANNUITY', rationale: DEFAULT_RATIONALE, advisor: 'Broker', channel: 'Telephone',
+          })
+        } else if (status === 'IN_PROGRESS') {
+          await issueMaturityPackages()
+        } else if (status === 'MATURITY_PACKAGE_SENT' || status === 'AWAITING_INFORMATION') {
+          for (const documentType of current.outstandingDocuments ?? []) {
+            await recordJourneyDocument(
+              step.caseId, documentType, `${documentType.toLowerCase()}.pdf`,
+              documentType === 'BANK_DETAILS' ? DEMO_ACCOUNT_HOLDER : null,
+            )
+          }
+        } else if (status === 'ON_HOLD') {
+          await resolveCaseException(step.caseId, DEFAULT_REVIEW_NOTE)
+        } else {
+          break
+        }
+        records = await fetchCases()
+        current = find(records)
+      }
+      if (stale()) return
+      setCaseLoadState({ status: 'success', cases: records.map(mapBackendCase), error: '' })
+      setJourneyReload((count) => count + 1)
+      setPrepState({ busy: false, error: '' })
+    } catch (error) {
+      if (stale()) return
+      setPrepState({ busy: false, error: error instanceof Error ? error.message : 'Could not prepare this chapter.' })
+    }
+  }
 
   const goToDemoStep = (index) => {
     const step = demoFlowSteps[index]
     if (!step) return
+    if (demoStep && demoStep.role !== step.role && !step.slide) {
+      setHandoff({ step, key: Date.now() })
+      window.setTimeout(() => setHandoff(null), 1600)
+    }
     setDemoStepIndex(index)
     setRole(step.role)
     if (step.caseId) setSelectedCaseId(step.caseId)
     if (step.role === 'caseworker') setCaseworkerPage(step.caseworkerPage ?? 'queue')
     if (step.role === 'broker') setBrokerPage(step.brokerPage ?? 'list')
     setCustomerFocus(step.customerFocus ?? '')
+    setOptionReview(null)
+    setCaseActionError('')
+    setJourneyReload((count) => count + 1)
+    scrolledTarget.current = null
+    window.scrollTo({ top: 0 })
+    prepareForStep(step)
   }
+
+  // While the demo runs, keep the case list fresh so work the platform does on
+  // its own (such as issuing the formal pack) appears without a click.
+  useEffect(() => {
+    if (demoStepIndex === null) return undefined
+    const timer = window.setInterval(() => {
+      fetchCases()
+        .then((records) => setCaseLoadState({ status: 'success', cases: records.map(mapBackendCase), error: '' }))
+        .catch(() => {})
+    }, 4000)
+    return () => window.clearInterval(timer)
+  }, [demoStepIndex])
 
   const restoreDemoData = async () => {
     setCaseActionBusy(true)
@@ -597,83 +788,9 @@ function App() {
       const records = await resetDemoData()
       setCaseLoadState({ status: 'success', cases: records.map(mapBackendCase), error: '' })
       setJourneyReload((count) => count + 1)
-      notify('Demo data restored to the three prototype scenarios.')
+      notify('Demo data restored.')
     } catch (error) {
       notify(error instanceof Error ? error.message : 'Could not reset the demo data.')
-    } finally {
-      setCaseActionBusy(false)
-    }
-  }
-
-  /**
-   * Drives the demo case forward to whatever state the current step expects,
-   * using the real endpoints. Lets a presenter jump to any step without hitting
-   * an out-of-order error.
-   */
-  const catchUpToStep = async (step) => {
-    const targetCaseId = step?.caseId
-    if (!targetCaseId || !step.status) return
-
-    setCaseActionBusy(true)
-    setCaseActionError('')
-    try {
-      const order = [
-        'NON_CLE_OWNER_DETECTED',
-        'CLE_OWNER_DETECTED',
-        'ADVICE_REQUESTED',
-        'APPOINTMENT_BOOKED',
-        'IN_PROGRESS',
-        'MATURITY_PACKAGE_SENT',
-        'COMPLETED',
-      ]
-      // CLE and NON_CLE owner detection are the same point in the journey.
-      const rank = (status) => (status === 'CLE_OWNER_DETECTED' ? 0 : order.indexOf(status))
-      const targetIndex = rank(step.status)
-      let records = await fetchCases()
-      let current = records.find((item) => item.caseId === targetCaseId)
-
-      // Rewind first if the case has already moved past the step.
-      if (current && rank(current.caseStatus) > targetIndex) {
-        const reset = await resetDemoData()
-        records = reset
-        current = records.find((item) => item.caseId === targetCaseId)
-      }
-
-      for (let guard = 0; guard < 8; guard += 1) {
-        const index = rank(current?.caseStatus)
-        if (index === -1 || index >= targetIndex) break
-
-        if (current.caseStatus === 'NON_CLE_OWNER_DETECTED' || current.caseStatus === 'CLE_OWNER_DETECTED') {
-          await requestAdvice(targetCaseId, 'LUMP_SUM')
-        } else if (current.caseStatus === 'ADVICE_REQUESTED') {
-          await bookAppointment(targetCaseId, {
-            appointmentAt: new Date(Date.now() + 3 * 86400000).toISOString(),
-            advisor: 'Meridian Financial',
-            channel: 'Telephone',
-          })
-        } else if (current.caseStatus === 'APPOINTMENT_BOOKED') {
-          await recordRecommendation(targetCaseId, {
-            recommendedOption: 'ANNUITY',
-            rationale: DEFAULT_RATIONALE,
-            advisor: 'Meridian Financial',
-            channel: 'Telephone',
-          })
-        } else if (current.caseStatus === 'IN_PROGRESS') {
-          await issueMaturityPackages()
-        } else if (current.caseStatus === 'MATURITY_PACKAGE_SENT') {
-          await recordJourneyDocument(targetCaseId, 'PASSPORT', 'demo-passport.pdf')
-          await recordJourneyDocument(targetCaseId, 'BANK_DETAILS', 'demo-bank.pdf')
-        }
-
-        records = await fetchCases()
-        current = records.find((item) => item.caseId === targetCaseId)
-      }
-
-      setCaseLoadState({ status: 'success', cases: records.map(mapBackendCase), error: '' })
-      setJourneyReload((count) => count + 1)
-      notify(`${targetCaseId} is ready for this step.`)
-    } catch (error) {
-      setCaseActionError(error instanceof Error ? error.message : 'Could not prepare this step.')
     } finally {
       setCaseActionBusy(false)
     }
@@ -684,6 +801,22 @@ function App() {
     setCustomerFocus('')
   }
 
+  // The live chapter's next click gets a pulsing ring, so the driver never
+  // hunts for it and the audience's eye follows.
+  const demoStepDone = Boolean(demoStep?.advancesTo && selectedCase?.id === demoStep.caseId
+    && journeyRank(selectedCase.backendStatus) >= journeyRank(demoStep.advancesTo))
+  useEffect(() => {
+    document.querySelectorAll('.demo-highlight').forEach((element) => element.classList.remove('demo-highlight'))
+    if (!demoStep?.highlight || demoStepDone || prepState.busy || handoff) return
+    const target = document.querySelector(demoStep.highlight)
+    if (!target) return
+    target.classList.add('demo-highlight')
+    if (demoStep.scrollToHighlight && scrolledTarget.current !== target) {
+      scrolledTarget.current = target
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }
+  })
+
   useEffect(() => {
     if (demoStepIndex === null) return undefined
 
@@ -692,12 +825,14 @@ function App() {
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) return
       if (event.key === 'ArrowRight') {
         event.preventDefault()
-        goToDemoStep(Math.min(demoStepIndex + 1, demoFlowSteps.length - 1))
+        if (!prepState.busy) goToDemoStep(Math.min(demoStepIndex + 1, demoFlowSteps.length - 1))
       } else if (event.key === 'ArrowLeft') {
         event.preventDefault()
-        goToDemoStep(Math.max(demoStepIndex - 1, 0))
+        if (!prepState.busy) goToDemoStep(Math.max(demoStepIndex - 1, 0))
       } else if (event.key === 'Escape') {
-        exitDemoFlow()
+        // Close an open statement first rather than leaving the demo.
+        if (customerFocus) setCustomerFocus('')
+        else exitDemoFlow()
       }
     }
 
@@ -709,7 +844,8 @@ function App() {
     <div className={`app-shell role-${role}${demoStep ? ' demo-flow-active' : ''}`}>
       {role === 'caseworker' ? (
         <CaseworkerView
-          cases={caseLoadState.cases}
+          cases={viewCases}
+          demoFocused={demoFocused}
           selectedCase={selectedCase}
           selectedPage={caseworkerPage}
           loading={caseLoadState.status === 'loading'}
@@ -721,7 +857,6 @@ function App() {
             setCaseworkerPage('case')
           }}
           onBack={() => setCaseworkerPage('queue')}
-          onNotify={notify}
           onRunJourney={runLiveJourney}
           workflowBusy={workflowBusy}
           workflowResult={workflowResult}
@@ -729,6 +864,7 @@ function App() {
           caseActionError={caseActionError}
           onRequestInformation={persistCaseAction}
           onIssueFormalPack={issueFormalPack}
+          onResolveException={caseworkerResolveException}
           highlightCaseId={demoStep?.caseId || ''}
           efficiencyState={efficiencyState}
           onRetryEfficiency={() => setCaseReload((count) => count + 1)}
@@ -740,7 +876,7 @@ function App() {
       ) : null}
       {role === 'broker' ? (
         <BrokerCasesView
-          cases={caseLoadState.cases}
+          cases={viewCases.filter((item) => item.ownerType === 'NON_CLE')}
           selectedCase={selectedCase}
           loading={caseLoadState.status === 'loading'}
           error={caseLoadState.status === 'error' ? caseLoadState.error : ''}
@@ -753,7 +889,7 @@ function App() {
           actionError={caseActionError}
           onRequestInformation={persistCaseAction}
           onAcceptLead={advisorAcceptLead}
-          onBookAppointment={advisorBookAppointment}
+          onScheduleConversation={advisorScheduleConversation}
           onRecordAdvice={advisorRecordAdvice}
           onPreviewCustomer={(caseId) => {
             setSelectedCaseId(caseId)
@@ -763,38 +899,46 @@ function App() {
       ) : null}
       {role === 'customer' ? (
         <CustomerView
-          cases={caseLoadState.cases}
+          cases={viewCases}
+          demoActive={Boolean(demoStep)}
           selectedCase={selectedCase}
           casesLoading={caseLoadState.status === 'loading'}
           casesError={caseLoadState.status === 'error' ? caseLoadState.error : ''}
           journeyState={currentJourneyState}
           focus={customerFocus}
+          optionReview={optionReview}
+          onOptionReview={setOptionReview}
+          onOpenStatement={() => setCustomerFocus('annual-statement')}
+          onSeeOptionsInDemo={demoStep?.id === 'statement' ? () => goToDemoStep(demoStepIndex + 1) : null}
           onClearFocus={() => setCustomerFocus('')}
           onSelectCase={(id) => setSelectedCaseId(id)}
           onRetryCases={reloadCases}
           onRetryJourney={() => setJourneyReload((count) => count + 1)}
           onRequestAdvice={submitAdviceRequest}
           onSubmitDocument={submitJourneyDocument}
+          demoAccountHolder={demoStep ? DEMO_ACCOUNT_HOLDER : null}
           onNotify={notify}
         />
       ) : null}
 
+      {demoStep?.slide ? <DemoSlide kind={demoStep.slide} key={demoStep.slide} /> : null}
+      {handoff ? <DemoHandoff step={handoff.step} key={handoff.key} /> : null}
       {demoStep ? (
-        <>
-          <DemoStepBanner step={demoStep} stepIndex={demoStepIndex} total={demoFlowSteps.length} />
-          <DemoFlowRail
-            steps={demoFlowSteps}
-            stepIndex={demoStepIndex}
-            step={demoStep}
-            caseStatus={selectedCase?.backendStatus || ''}
-            caseId={selectedCase?.id || ''}
-            resetBusy={caseActionBusy}
-            onReset={restoreDemoData}
-            onCatchUp={() => catchUpToStep(demoStep)}
-            onStep={goToDemoStep}
-            onExit={exitDemoFlow}
-          />
-        </>
+        <DemoCaption
+          steps={demoFlowSteps}
+          stepIndex={demoStepIndex}
+          step={demoStep}
+          done={demoStepDone}
+          preparing={prepState.busy}
+          error={prepState.error || caseActionError || currentJourneyState.actionError}
+          resetBusy={caseActionBusy}
+          onStep={goToDemoStep}
+          onReset={async () => {
+            await restoreDemoData()
+            goToDemoStep(0)
+          }}
+          onExit={exitDemoFlow}
+        />
       ) : (
         <RoleSwitcher role={role} onChange={selectRole} onStartDemo={() => goToDemoStep(0)} />
       )}
@@ -807,7 +951,7 @@ function RoleSwitcher({ role, onChange, onStartDemo }) {
   return (
     <div className="role-switcher" aria-label="Demo role selector">
       <button className="demo-flow-launch" type="button" onClick={onStartDemo}>
-        <span aria-hidden="true">▶</span> Demo flow
+        <span aria-hidden="true">▶</span> Start demo
       </button>
       <span>View as</span>
       {[
@@ -830,71 +974,23 @@ function RoleSwitcher({ role, onChange, onStartDemo }) {
 }
 
 /**
- * Presenter control for the guided walkthrough. It drives the real application
- * into each step's view, so the audience always sees live screens.
+ * The demo's caption: one chapter title and one plain sentence, written for
+ * the audience. Driver-only controls (reset, exit) sit behind the menu.
  */
-/**
- * Sits on top of whichever screen the demo is showing and says, in plain terms,
- * what this page is and what to do on it. Keeps the audience oriented without
- * the presenter having to narrate the mechanics.
- */
-function DemoStepBanner({ step, stepIndex, total }) {
-  const persona = personas[step.role]
-  return (
-    <div className={`demo-step-banner audience-${persona.tone}`} role="status">
-      <span className="demo-step-banner-index">{stepIndex + 1}/{total}</span>
-      <span className="demo-step-banner-when">{step.when}</span>
-      <span className="demo-step-banner-persona">
-        <strong>{persona.name}</strong>
-        <small>{persona.role}</small>
-      </span>
-      <span className="demo-step-banner-page">{step.page}</span>
-      {step.doNow ? (
-        <span className="demo-step-banner-do">
-          <strong>{step.live ? 'Do now:' : 'Say:'}</strong> {step.doNow}
-        </span>
-      ) : null}
-    </div>
-  )
-}
-
-function DemoFlowRail({
-  steps, stepIndex, step, caseStatus, caseId, resetBusy, onReset, onCatchUp, onStep, onExit,
+function DemoCaption({
+  steps, stepIndex, step, done, preparing, error, resetBusy, onStep, onReset, onExit,
 }) {
-  const railRef = useRef(null)
-  const atStart = stepIndex === 0
-  const atEnd = stepIndex === steps.length - 1
+  const barRef = useRef(null)
+  const [menuOpen, setMenuOpen] = useState(false)
 
-  // Live steps are the ones the presenter performs on stage, so they report
-  // progress rather than warning that the case has moved on.
-  let cue = null
-  if (step.live && caseStatus === step.advancesTo) {
-    cue = { tone: 'done', text: `Done. ${caseId} advanced to ${caseStatus}.` }
-  } else if (step.status && caseStatus === step.status) {
-    cue = {
-      tone: 'ready',
-      text: step.live
-        ? `Ready. ${caseId} is at ${caseStatus} — perform the action now.`
-        : `${caseId} is at ${caseStatus}, as this step describes.`,
-    }
-  } else if (step.status && caseStatus && step.status !== caseStatus) {
-    cue = {
-      tone: 'warn',
-      text: `This step needs ${step.status}, but ${caseId || 'the case'} is at ${caseStatus}.`,
-      fixable: true,
-    }
-  }
-
-  // Keep the page's bottom padding in step with the rail so nothing hides behind it.
+  // Keep the page's bottom padding in step with the bar so nothing hides behind it.
   useEffect(() => {
-    const rail = railRef.current
-    if (!rail) return undefined
-
-    const apply = () => document.documentElement.style.setProperty('--demo-rail-height', `${rail.offsetHeight}px`)
+    const bar = barRef.current
+    if (!bar) return undefined
+    const apply = () => document.documentElement.style.setProperty('--demo-rail-height', `${bar.offsetHeight}px`)
     apply()
     const observer = new ResizeObserver(apply)
-    observer.observe(rail)
-
+    observer.observe(bar)
     return () => {
       observer.disconnect()
       document.documentElement.style.removeProperty('--demo-rail-height')
@@ -902,74 +998,298 @@ function DemoFlowRail({
   }, [])
 
   return (
-    <aside className="demo-flow-rail" aria-label="Guided demo flow" ref={railRef}>
-      <div className="demo-flow-timeline" role="tablist" aria-label="Demo flow steps">
+    <aside className="demo-caption" aria-label="Guided demo" ref={barRef}>
+      <ol className="demo-caption-dots" aria-label="Chapters">
         {steps.map((item, index) => (
-          <button
-            key={item.id}
-            type="button"
-            role="tab"
-            aria-selected={index === stepIndex}
-            title={`${item.when} — ${item.title}`}
-            className={
-              index === stepIndex
-                ? 'demo-flow-tick current'
-                : index < stepIndex
-                  ? 'demo-flow-tick done'
-                  : 'demo-flow-tick'
-            }
-            onClick={() => onStep(index)}
-          >
-            <span className="demo-flow-tick-time">{item.when}</span>
-            <span className="demo-flow-tick-label">{item.title}</span>
-          </button>
+          <li key={item.id}>
+            <button
+              type="button"
+              className={index === stepIndex ? 'current' : index < stepIndex ? 'done' : ''}
+              aria-label={`Chapter ${index + 1}: ${item.title}`}
+              aria-current={index === stepIndex ? 'step' : undefined}
+              onClick={() => onStep(index)}
+            />
+          </li>
         ))}
+      </ol>
+      <div className="demo-caption-copy" role="status">
+        <span className="demo-caption-when">{step.when}</span>
+        <strong>{step.title}</strong>
+        <p className={preparing ? 'demo-caption-preparing' : done ? (step.doneTone === 'warn' ? 'demo-caption-warn' : 'demo-caption-done') : ''}>
+          {preparing
+            ? 'Preparing this step…'
+            : done && step.done ? `${step.doneTone === 'warn' ? '⚠' : '✓'} ${step.done}` : step.line}
+        </p>
+        {error && !preparing ? <small className="demo-caption-error">{error}</small> : null}
       </div>
-
-      <div className="demo-flow-body">
-        <div className="demo-flow-headline">
-          <span className={`demo-flow-audience audience-${personas[step.role].tone}`}>
-            {personas[step.role].name}
-          </span>
-          <div className="demo-flow-title-block">
-            <strong>{step.title}</strong>
-            <span className="demo-flow-counter">
-              {step.when} · Step {stepIndex + 1} of {steps.length}
-            </span>
-            {step.live ? <span className="demo-flow-live">Do this live</span> : null}
-          </div>
-        </div>
-
-        <p className="demo-flow-summary">{step.summary}</p>
-
-        {cue ? (
-          <p className={`demo-flow-hint demo-flow-hint-${cue.tone}`} role="status">
-            {cue.text}
-            {cue.fixable ? (
-              <button className="demo-flow-fix" type="button" disabled={resetBusy} onClick={onCatchUp}>
-                {resetBusy ? 'Preparing…' : 'Catch the case up'}
-              </button>
-            ) : null}
-          </p>
-        ) : null}
-      </div>
-
-      <div className="demo-flow-controls">
-        <button className="button button-secondary" type="button" disabled={atStart} onClick={() => onStep(stepIndex - 1)}>
-          ← Back
+      <div className="demo-caption-controls">
+        <button className="button button-secondary" type="button" disabled={stepIndex === 0 || preparing} onClick={() => onStep(stepIndex - 1)}>
+          ←
         </button>
-        <button className="button button-primary" type="button" disabled={atEnd} onClick={() => onStep(stepIndex + 1)}>
+        <button className="button button-primary" type="button" disabled={stepIndex === steps.length - 1 || preparing} onClick={() => onStep(stepIndex + 1)}>
           Next →
         </button>
-        <button className="text-button demo-flow-exit" type="button" onClick={onExit}>
-          Exit
-        </button>
-        <button className="text-button demo-flow-reset" type="button" disabled={resetBusy} onClick={onReset}>
-          {resetBusy ? 'Restoring…' : 'Reset demo data'}
-        </button>
-        <span className="demo-flow-keys">← → to move · Esc to exit</span>
+        <div className="demo-caption-menu">
+          <button className="text-button" type="button" aria-expanded={menuOpen} aria-label="Demo menu" onClick={() => setMenuOpen((open) => !open)}>
+            ⚙
+          </button>
+          {menuOpen ? (
+            <div className="demo-caption-menu-list">
+              <button type="button" disabled={resetBusy} onClick={() => { setMenuOpen(false); onReset() }}>
+                {resetBusy ? 'Resetting…' : 'Restart demo'}
+              </button>
+              <button type="button" onClick={() => { setMenuOpen(false); onExit() }}>Exit demo</button>
+            </div>
+          ) : null}
+        </div>
       </div>
     </aside>
+  )
+}
+
+/** Content for the presentation slides that open and close the demo. */
+const teamMembers = [
+  'Sean Breen', 'Niamh Conolly', 'Joshua Flores', 'Karl Mcintyre', 'Mihir Pednekar', 'Dmytro Proskurin',
+]
+
+const roleCards = [
+  ['MS', 'Customer', 'Sees her options early and asks for advice online.', 'customer'],
+  ['BC', 'Broker', 'Gets a ready-to-advise lead, with everything on one screen.', 'broker'],
+  ['CO', 'CLE Operations', 'Steps in only when something needs a person.', 'caseworker'],
+]
+
+/** Maturing policies by end date (team analysis), by product type. */
+const maturityWave = [
+  { year: 2024, bav: 1218, basic: 965, privat: 4222, biometry: 521 },
+  { year: 2025, bav: 1280, basic: 1088, privat: 4001, biometry: 602 },
+  { year: 2026, bav: 1738, basic: 1297, privat: 5155, biometry: 723 },
+  { year: 2027, bav: 2090, basic: 1463, privat: 5486, biometry: 781 },
+  { year: 2028, bav: 2412, basic: 1720, privat: 6129, biometry: 730 },
+  { year: 2029, bav: 2844, basic: 2018, privat: 7156, biometry: 885 },
+  { year: 2030, bav: 3297, basic: 2145, privat: 7242, biometry: 1028 },
+  { year: 2031, bav: 3724, basic: 2241, privat: 7704, biometry: 1184 },
+  { year: 2032, bav: 4162, basic: 2280, privat: 8101, biometry: 1020 },
+  { year: 2033, bav: 4365, basic: 2417, privat: 8080, biometry: 1033 },
+  { year: 2034, bav: 4472, basic: 2341, privat: 8096, biometry: 1351 },
+].map((row) => ({ ...row, total: row.bav + row.basic + row.privat + row.biometry }))
+
+const opportunityStats = [
+  ['+82%', 'more policies maturing by 2034: from 8,913 to 16,260 a year'],
+  ['38.5%', 'team capacity freed by automation: 3.04 to 1.87 FTE for the same workload'],
+  ['9 → 1', 'manual touches per case: today’s estimate against our journey'],
+]
+
+const numberFormat = new Intl.NumberFormat('en-IE')
+
+/**
+ * Total maturing policies per year. One series, so one hue: the start and end
+ * of the wave are emphasised and labelled, and hovering a year shows its mix.
+ */
+function MaturityWaveChart() {
+  const [hovered, setHovered] = useState(null)
+  const width = 560
+  const height = 280
+  const margin = { top: 28, right: 8, bottom: 30, left: 44 }
+  const plotWidth = width - margin.left - margin.right
+  const plotHeight = height - margin.top - margin.bottom
+  const max = 18000
+  const band = plotWidth / maturityWave.length
+  const barWidth = band - 10
+  const y = (value) => margin.top + plotHeight - (value / max) * plotHeight
+  const emphasised = (year) => year === 2026 || year === 2034
+  const active = hovered === null ? null : maturityWave[hovered]
+
+  return (
+    <figure className="wave-chart">
+      <figcaption>
+        <strong>Policies maturing each year</strong>
+        <span>2024–2034, all product types · hover a year for the mix</span>
+      </figcaption>
+      <div className="wave-chart-plot">
+        <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Maturing policies per year rise from 6,926 in 2024 to 16,260 in 2034">
+          {[0, 5000, 10000, 15000].map((tick) => (
+            <g key={tick}>
+              <line x1={margin.left} x2={width - margin.right} y1={y(tick)} y2={y(tick)} className="wave-grid" />
+              <text x={margin.left - 8} y={y(tick) + 4} className="wave-axis" textAnchor="end">
+                {tick === 0 ? '0' : `${tick / 1000}k`}
+              </text>
+            </g>
+          ))}
+          {maturityWave.map((row, index) => {
+            const x = margin.left + index * band + 5
+            const top = y(row.total)
+            const barHeight = margin.top + plotHeight - top
+            const r = 4
+            // Rounded top, square base anchored to the baseline.
+            const path = `M${x},${top + barHeight} V${top + r} Q${x},${top} ${x + r},${top} H${x + barWidth - r} Q${x + barWidth},${top} ${x + barWidth},${top + r} V${top + barHeight} Z`
+            return (
+              <g key={row.year}>
+                <path d={path} className={emphasised(row.year) ? 'wave-bar wave-bar-strong' : 'wave-bar'} />
+                {emphasised(row.year) ? (
+                  <text x={x + barWidth / 2} y={top - 8} textAnchor="middle" className="wave-value">
+                    {numberFormat.format(row.total)}
+                  </text>
+                ) : null}
+                <text x={x + barWidth / 2} y={height - 10} textAnchor="middle" className="wave-axis">
+                  {String(row.year).slice(2)}
+                </text>
+                <rect
+                  x={margin.left + index * band}
+                  y={margin.top}
+                  width={band}
+                  height={plotHeight}
+                  className="wave-hit"
+                  onMouseEnter={() => setHovered(index)}
+                  onMouseLeave={() => setHovered(null)}
+                />
+              </g>
+            )
+          })}
+        </svg>
+        {active ? (
+          <div
+            className="wave-tooltip"
+            style={{ left: `${((margin.left + hovered * band + band / 2) / width) * 100}%` }}
+            role="status"
+          >
+            <strong>{active.year} · {numberFormat.format(active.total)} policies</strong>
+            <span>bAV {numberFormat.format(active.bav)}</span>
+            <span>Basic {numberFormat.format(active.basic)}</span>
+            <span>Private {numberFormat.format(active.privat)}</span>
+            <span>Biometry {numberFormat.format(active.biometry)}</span>
+          </div>
+        ) : null}
+      </div>
+      <table className="visually-hidden">
+        <caption>Maturing policies per year</caption>
+        <thead><tr><th>Year</th><th>bAV</th><th>Basic</th><th>Private</th><th>Biometry</th><th>Total</th></tr></thead>
+        <tbody>
+          {maturityWave.map((row) => (
+            <tr key={row.year}>
+              <td>{row.year}</td><td>{row.bav}</td><td>{row.basic}</td><td>{row.privat}</td><td>{row.biometry}</td><td>{row.total}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <small className="wave-source">Source: team analysis of maturing policies by end date (bAV, basic, private, biometry).</small>
+    </figure>
+  )
+}
+
+const nextSteps = [
+  {
+    title: 'German-language journeys',
+    detail: 'Customer portal, statements and broker workspace in German, with German date and currency formats. Customer wording reviewed by Legal and Compliance.',
+  },
+  {
+    title: 'Agent-assisted operations',
+    detail: 'AI agents read uploaded documents, flag conflicts, summarise cases for brokers and case workers, and draft targeted requests within approved templates.',
+  },
+  {
+    title: 'Deterministic controls',
+    detail: 'Eligibility, routing, deadlines and payment calculations stay rule-based and auditable. Agents assist; they do not make binding decisions.',
+  },
+  {
+    title: 'Integration and pilot',
+    detail: 'Connect to iSuite and MSG Life Factory events, Salesforce and CCM, then pilot with a small group of brokers, measuring touchpoints, STP rate and lead acceptance.',
+  },
+]
+
+/** Staggered build-in for slide elements. */
+const reveal = (order) => ({ animationDelay: `${0.12 + order * 0.12}s` })
+
+/** Full-screen presentation slide shown in place of the app. */
+function DemoSlide({ kind }) {
+  if (kind === 'solution') {
+    return (
+      <div className="demo-slide" role="presentation">
+        <div className="demo-slide-card demo-slide-split">
+          <div>
+            <p className="eyebrow demo-reveal" style={reveal(0)}>01 / OUR SOLUTION</p>
+            <p className="demo-slide-label demo-reveal" style={reveal(1)}>SOLUTION SUMMARY</p>
+            <h1 className="demo-reveal" style={reveal(1)}>
+              Retirement Hub
+              <span>Every maturity handled early. Only exceptions need a person.</span>
+            </h1>
+            <p className="demo-slide-label demo-reveal" style={reveal(2)}>SOLUTION DESCRIPTION</p>
+            <ul className="demo-slide-points demo-reveal" style={reveal(2)}>
+              <li><strong>Starts at T-12</strong>, not T-3: every maturity case opens a year early.</li>
+              <li><strong>Routes automatically</strong> to the right broker or in-house advisor.</li>
+              <li><strong>Guides the customer</strong> from options to advice to payment, online.</li>
+            </ul>
+            <p className="demo-slide-label demo-reveal" style={reveal(3)}>TEAM 6</p>
+            <ul className="demo-slide-team demo-reveal" style={reveal(3)}>
+              {teamMembers.map((name) => <li key={name}>{name}</li>)}
+            </ul>
+          </div>
+          <div className="demo-slide-roles demo-slide-roles-stacked">
+            {roleCards.map(([initialsText, name, detail, tone], index) => (
+              <div className={`demo-slide-role demo-reveal role-tone-${tone}`} style={reveal(4 + index)} key={name}>
+                <span className="demo-slide-avatar">{initialsText}</span>
+                <div><strong>{name}</strong><p>{detail}</p></div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (kind === 'opportunity') {
+    return (
+      <div className="demo-slide" role="presentation">
+        <div className="demo-slide-card">
+          <p className="eyebrow demo-reveal" style={reveal(0)}>THE OPPORTUNITY</p>
+          <h1 className="demo-reveal" style={reveal(1)}>Maturities nearly double by 2034. Capacity has to be ready first.</h1>
+          <div className="demo-slide-opportunity">
+            <div className="demo-slide-stats demo-slide-stats-stacked">
+              {opportunityStats.map(([figure, text], index) => (
+                <div className="demo-slide-stat demo-reveal" style={reveal(2 + index)} key={figure}>
+                  <strong>{figure}</strong>
+                  <p>{text}</p>
+                </div>
+              ))}
+            </div>
+            <div className="demo-reveal" style={reveal(5)}>
+              <MaturityWaveChart />
+            </div>
+          </div>
+          <p className="demo-slide-footnote demo-reveal" style={reveal(6)}>
+            Without automation, we hire at the pace of the wave. With Retirement Hub, today’s teams absorb it and
+            focus on the cases that need them.
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="demo-slide" role="presentation">
+      <div className="demo-slide-card demo-next-card">
+        <p className="eyebrow demo-reveal" style={reveal(0)}>NEXT STEPS</p>
+        <h1 className="demo-reveal" style={reveal(1)}>From prototype to pilot</h1>
+        <ol className="demo-next-list">
+          {nextSteps.map((item, index) => (
+            <li className="demo-reveal" style={reveal(2 + index)} key={item.title}>
+              <span aria-hidden="true">{index + 1}</span>
+              <div><strong>{item.title}</strong><p>{item.detail}</p></div>
+            </li>
+          ))}
+        </ol>
+      </div>
+    </div>
+  )
+}
+
+/** Shown for a moment when the demo moves to another person. */
+function DemoHandoff({ step }) {
+  const persona = personas[step.role]
+  return (
+    <div className={`demo-handoff audience-${persona.tone}`} aria-live="polite">
+      <span>{step.when}</span>
+      <strong>{persona.name}</strong>
+      <small>{persona.role}</small>
+    </div>
   )
 }
 
@@ -1022,20 +1342,18 @@ function CaseAuditTrail({ events }) {
         {ordered.map((event, index) => (
           <li className={event.automated ? 'audit-entry automated' : 'audit-entry manual'} key={`${event.action}-${event.at}-${index}`}>
             <div className="audit-entry-head">
-              <code>{event.action}</code>
+              <strong>{auditActionLabels[event.action] || event.action}</strong>
+              {auditActionLabels[event.action] ? <code>{event.action}</code> : null}
               <span className={event.automated ? 'audit-actor automated' : 'audit-actor manual'}>
                 {event.automated ? 'Automated' : event.actor}
               </span>
               <span className="audit-date">{formatEventDate(event.at)}</span>
             </div>
             <p>{event.detail}</p>
-            {event.status ? <small>Resulting status: {event.status}</small> : null}
+            {event.status ? <small>Case became: {staffStatus(event.status)}</small> : null}
           </li>
         ))}
       </ol>
-      <p className="backend-disclaimer">
-        Seeded history uses representative timestamps. Transitions you trigger during the demo are recorded live.
-      </p>
     </section>
   )
 }
@@ -1046,7 +1364,7 @@ function EfficiencyDashboard({ state, onRetry }) {
     return (
       <section className="panel connection-state" role="status">
         <div className="loading-indicator" aria-hidden="true" />
-        <div><strong>Loading efficiency measures</strong><p>Counting lanes and touchpoints from the live case store…</p></div>
+        <div><strong>Loading efficiency measures</strong><p>Counting lanes and touchpoints…</p></div>
       </section>
     )
   }
@@ -1062,103 +1380,47 @@ function EfficiencyDashboard({ state, onRetry }) {
 
   const metrics = state.data
   const laneRows = [
-    ['GREEN', metrics.greenCases, 'Executed straight through'],
-    ['AMBER', metrics.amberCases, 'One targeted request outstanding'],
-    ['RED', metrics.redCases, 'Held for a human decision'],
+    ['GREEN', metrics.greenCases, 'Complete and ready for payment'],
+    ['AMBER', metrics.amberCases, 'One item outstanding, targeted request sent'],
+    ['RED', metrics.redCases, 'Awaiting a case worker decision'],
   ]
   // Bars are sized against the classified portfolio so they read as a share of
   // the whole, not relative to whichever lane happens to be largest.
   const laneDenominator = Math.max(1, metrics.classifiedCases)
 
+  // The headline: what the journey removes, and where people still help.
   return (
-    <>
-      <section className="efficiency-headline">
-        <article className="efficiency-hero">
-          <p className="eyebrow">OPERATIONAL TOUCHPOINTS AVOIDED</p>
-          <strong>{metrics.manualTouchpointsAvoided}</strong>
+      <div className="efficiency-summary">
+        <article className="efficiency-hero efficiency-hero-large">
+          <p className="eyebrow">MANUAL ADMIN AVOIDED</p>
+          <strong>{Math.round(metrics.manualEffortReductionPercent)}%</strong>
           <span>
-            of {metrics.baselineManualTouchpoints} in the current process
-            · {metrics.manualEffortReductionPercent}% less operational handling
+            {metrics.manualTouchpointsAvoided} of {metrics.baselineManualTouchpoints} manual touches removed
+            across these maturities
           </span>
         </article>
-        <div className="efficiency-metrics">
-          <Metric label="Straight-through rate" value={`${metrics.stpRatePercent}%`} tone="green" />
-          <Metric label="Exception rate" value={`${metrics.exceptionRatePercent}%`} tone="red" />
-          <Metric label="Automated actions" value={metrics.automatedTouchpoints} />
-          <Metric label="Operations handling" value={metrics.operationalTouchpoints} tone="amber" />
-        </div>
-      </section>
-
-      <section className="panel">
-        <PanelHeading
-          title="Where the human effort goes"
-          detail="Not all human effort is waste — only operational handling is what this removes"
-        />
-        <div className="efficiency-metrics">
-          <Metric label="Advice conversations" value={metrics.adviceTouchpoints} tone="green" />
-          <Metric label="Client self-service" value={metrics.selfServiceTouchpoints} />
-          <Metric label="Operations handling" value={metrics.operationalTouchpoints} tone="amber" />
-        </div>
-        <p className="muted-copy">
-          Advice is the value the broker adds, and self-service replaces a call or a letter. Neither is
-          counted against the baseline. Only operational handling is.
-        </p>
-      </section>
-
-      <section className="panel">
-        <PanelHeading
-          title="Processing lanes"
-          detail={`${metrics.classifiedCases} of ${metrics.totalCases} cases classified · ${metrics.unclassifiedCases} still awaiting a customer response`}
-        />
-        <div className="lane-bars">
-          {laneRows.map(([lane, count, detail]) => (
-            <div className="lane-bar-row" key={lane}>
-              <LanePill lane={lane} />
-              <div className="lane-bar-track">
-                <div className={`lane-bar-fill lane-fill-${laneMeta[lane].tone}`} style={{ width: `${(count / laneDenominator) * 100}%` }} />
+        <section className="panel">
+          <PanelHeading title="Where people still help" detail="Only the cases that need a person reach one" />
+          <div className="lane-bars">
+            {laneRows.map(([lane, count, detail]) => (
+              <div className="lane-bar-row" key={lane}>
+                <LanePill lane={lane} />
+                <div className="lane-bar-track">
+                  <div className={`lane-bar-fill lane-fill-${laneMeta[lane].tone}`} style={{ width: `${(count / laneDenominator) * 100}%` }} />
+                </div>
+                <strong className="lane-bar-count">{count}</strong>
+                <span className="lane-bar-detail">{detail}</span>
               </div>
-              <strong className="lane-bar-count">{count}</strong>
-              <span className="lane-bar-detail">{detail}</span>
-            </div>
-          ))}
-        </div>
-        <p className="muted-copy">
-          The operating principle is not 100% automation. It is that the platform handles predictable
-          work so people spend their time on the red lane.
+            ))}
+          </div>
+        </section>
+        <p className="efficiency-assumption">
+          Baseline: an assumed {metrics.baselineManualTouchpointsPerCase} manual operational touchpoints per maturity
+          in today’s process. This is a stated assumption, not a measured figure. Advice conversations and
+          customer self-service are not counted as operational handling.
         </p>
-      </section>
-
-      <section className="panel">
-        <PanelHeading
-          title="Distribution"
-          detail="How the advice process is performing for brokers and In-House Sales"
-        />
-        <div className="efficiency-metrics">
-          <Metric label="Leads created" value={metrics.leadsCreated} />
-          <Metric label="Leads accepted" value={`${metrics.leadsAccepted} · ${metrics.leadAcceptanceRatePercent}%`} tone="green" />
-          <Metric label="Appointments booked" value={`${metrics.appointmentsBooked} · ${metrics.appointmentRatePercent}%`} />
-          <Metric label="Advice completed" value={`${metrics.adviceCompleted} · ${metrics.adviceCompletionRatePercent}%`} tone="green" />
-        </div>
-        <p className="muted-copy">
-          Acceptance is measured against leads created, appointments against leads accepted, and advice
-          completion against leads created — the drop-off points the pilot needs to watch.
-        </p>
-      </section>
-
-      <section className="panel">
-        <PanelHeading title="How this is measured" detail="What is counted and what is assumed" />
-        <ul className="efficiency-method">
-          <li>
-            <strong>Counted:</strong> lane classification, automated and manual actions are read from the
-            audit trail of every live case, including the transitions you trigger in this demo.
-          </li>
-          <li>
-            <strong>Assumed:</strong> {metrics.baselineNote}
-          </li>
-        </ul>
-      </section>
-    </>
-  )
+      </div>
+    )
 }
 
 function CaseworkerView({
@@ -1171,7 +1433,6 @@ function CaseworkerView({
   onSelectPage,
   onSelectCase,
   onBack,
-  onNotify,
   onRunJourney,
   workflowBusy,
   workflowResult,
@@ -1179,13 +1440,35 @@ function CaseworkerView({
   caseActionError,
   onRequestInformation,
   onIssueFormalPack,
+  onResolveException,
   highlightCaseId,
   efficiencyState,
   onRetryEfficiency,
   onPreviewCustomer,
+  demoFocused,
 }) {
   const [queueFilter, setQueueFilter] = useState('all')
-  const [workflowExpanded, setWorkflowExpanded] = useState(true)
+  const [workflowExpanded, setWorkflowExpanded] = useState(false)
+
+  if (selectedPage === 'timeline' && selectedCase) {
+    return (
+      <div className="staff-layout">
+        <aside className="sidebar">
+          <Brand subline="Retirement Hub" />
+          <SidebarLink active onClick={onBack}>Case queue</SidebarLink>
+          <SidebarLink onClick={() => onSelectPage('all')}>All cases</SidebarLink>
+          <SidebarLink onClick={() => onSelectPage('exceptions')}>Exceptions</SidebarLink>
+          <SidebarLink onClick={() => onSelectPage('lanes')}>Lanes</SidebarLink>
+          <SidebarLink onClick={() => onSelectPage('efficiency')}>Efficiency</SidebarLink>
+          <div className="sidebar-footer">CLE Operations<br /><span>Case worker</span></div>
+        </aside>
+        <main className="staff-main">
+          <button className="text-button back-link" type="button" onClick={() => onSelectPage('case')}>← Back to case</button>
+          <JourneyTimeline selectedCase={selectedCase} />
+        </main>
+      </div>
+    )
+  }
 
   if (selectedPage === 'case' && selectedCase) {
     return (
@@ -1197,9 +1480,7 @@ function CaseworkerView({
           <SidebarLink onClick={() => onSelectPage('exceptions')}>Exceptions</SidebarLink>
           <SidebarLink onClick={() => onSelectPage('lanes')}>Lanes</SidebarLink>
           <SidebarLink onClick={() => onSelectPage('efficiency')}>Efficiency</SidebarLink>
-          <SidebarLink onClick={() => onNotify('Agent activity is illustrative in this prototype.')}>Agent activity</SidebarLink>
-          <SidebarLink onClick={() => onNotify('Rules and limits are illustrative in this prototype.')}>Rules and limits</SidebarLink>
-          <div className="sidebar-footer">Signed in as case worker<br /><span>Demo access only</span></div>
+          <div className="sidebar-footer">CLE Operations<br /><span>Case worker</span></div>
         </aside>
         <main className="staff-main">
           <button className="text-button back-link" type="button" onClick={onBack}>← Back to case queue</button>
@@ -1209,7 +1490,9 @@ function CaseworkerView({
             actionError={caseActionError}
             onRequestInformation={onRequestInformation}
             onIssueFormalPack={onIssueFormalPack}
+            onResolveException={onResolveException}
             onPreviewCustomer={onPreviewCustomer}
+            onViewTimeline={() => onSelectPage('timeline')}
           />
         </main>
       </div>
@@ -1238,9 +1521,7 @@ function CaseworkerView({
         <SidebarLink active={showingExceptions} badge={redCases.length} onClick={() => onSelectPage('exceptions')}>Exceptions</SidebarLink>
         <SidebarLink active={showingLanes} onClick={() => onSelectPage('lanes')}>Lanes</SidebarLink>
         <SidebarLink active={showingEfficiency} onClick={() => onSelectPage('efficiency')}>Efficiency</SidebarLink>
-        <SidebarLink onClick={() => onNotify('Agent activity is illustrative in this prototype.')}>Agent activity</SidebarLink>
-        <SidebarLink onClick={() => onNotify('Rules and limits are illustrative in this prototype.')}>Rules and limits</SidebarLink>
-        <div className="sidebar-footer">Signed in as case worker<br /><span>Demo access only</span></div>
+        <div className="sidebar-footer">CLE Operations<br /><span>Case worker</span></div>
       </aside>
       <main className="staff-main">
         <header className="page-heading">
@@ -1255,17 +1536,16 @@ function CaseworkerView({
             </h1>
             <p className="muted-copy">
               {showingLanes
-                ? 'How every case sorts itself once we have an answer.'
+                ? 'Green is processed automatically, amber has one item outstanding, red needs a case worker.'
                 : showingEfficiency
-                  ? 'What the journey model removes from the operational workload.'
+                  ? 'Operational workload across all maturity cases.'
                   : showingExceptions
-                    ? 'Cases that need intervention, grouped by their current backend status.'
+                    ? 'Cases the platform stopped so a person can review them.'
                     : showingAll
-                      ? 'Cases returned by the case service.'
-                      : 'Review the cases currently returned by the case service.'}
+                      ? 'Every maturity case, whatever its stage.'
+                      : 'Policies maturing in the next 12 months.'}
             </p>
           </div>
-          <span className="demo-label live-label">LIVE API · DEMO FLOW</span>
         </header>
         {showingLanes ? (
           <LaneComparison cases={cases} onOpen={onSelectCase} />
@@ -1274,7 +1554,7 @@ function CaseworkerView({
         ) : loading ? (
           <section className="panel connection-state" role="status">
             <div className="loading-indicator" aria-hidden="true" />
-            <div><strong>Loading cases</strong><p>Connecting to the Java case service…</p></div>
+            <div><strong>Loading cases</strong><p>Fetching the latest maturity cases…</p></div>
           </section>
         ) : error ? (
           <section className="panel connection-state connection-error" role="alert">
@@ -1287,12 +1567,12 @@ function CaseworkerView({
           </section>
         ) : (
           <>
-            {!showingAll && !showingExceptions ? (
+            {!showingAll && !showingExceptions && !demoFocused ? (
               <section className="panel live-workflow-panel">
                 <header className="live-workflow-toggle">
                   <div>
-                    <h2>Run a live maturity journey</h2>
-                    <p>Create a policy, assess maturity, and classify its CLE/non-CLE owner.</p>
+                    <h2>Add a maturing policy</h2>
+                    <p>Create a test policy and watch the platform open a case and route it to the right advisor.</p>
                   </div>
                   <button
                     className="button button-secondary"
@@ -1313,8 +1593,9 @@ function CaseworkerView({
                 ) : null}
               </section>
             ) : null}
+            {!demoFocused ? (<>
             <div className="metric-grid">
-              <Metric label="Cases returned" value={cases.length} />
+              <Metric label="Maturity cases" value={cases.length} />
               <Metric label="Needs attention" value={redCases.length} tone="red" />
               <Metric label="In progress" value={amberCases.length + activeCases.length} tone="amber" />
             </div>
@@ -1325,7 +1606,7 @@ function CaseworkerView({
                 onClick={() => showingExceptions ? onSelectPage('exceptions') : setQueueFilter('red')}
               >
                 <span className="signal-dot" aria-hidden="true" />
-                <span><strong>Needs attention</strong><small>On hold or cancelled</small></span>
+                <span><strong>Needs attention</strong><small>Stopped for a person to review</small></span>
                 <b>{redCases.length}</b>
               </button>
               <button
@@ -1361,14 +1642,15 @@ function CaseworkerView({
                 }}
               >
                 <span className="signal-dot" aria-hidden="true" />
-                <span><strong>Other stages</strong><small>Active operational workflow</small></span>
+                <span><strong>Moving on its own</strong><small>No one needs to act yet</small></span>
                 <b>{activeCases.length}</b>
               </button>
             </section>
+            </>) : null}
             <section className="panel">
               <PanelHeading
                 title={showingExceptions ? 'Cases needing attention' : showingAll ? 'All cases' : 'Case queue'}
-                detail={`${filteredCases.length} of ${cases.length} case${cases.length === 1 ? '' : 's'} · Red / amber / green reflects current case status`}
+                detail={`${filteredCases.length} of ${cases.length} case${cases.length === 1 ? '' : 's'}`}
                 action={
                   <div className="queue-actions">
                     {!showingExceptions ? (
@@ -1384,13 +1666,13 @@ function CaseworkerView({
                 <EmptyState
                   title={showingExceptions || activeFilter === 'red' ? 'No red exceptions' : 'No cases in this view'}
                   detail={showingExceptions || activeFilter === 'red'
-                    ? 'There are no on-hold or cancelled cases in the current API response.'
+                    ? 'Nothing needs a person right now.'
                     : 'Try another status filter or refresh the case list.'}
                 />
               )}
             </section>
-            <p className="prototype-note">
-              <strong>Status colours:</strong> Red = on hold or cancelled; amber = awaiting customer/information or maturity package; green = completed. Other backend statuses are neutral. These signals are derived from the case status, not a separate risk assessment.
+            <p className="prototype-note" hidden={demoFocused}>
+              <strong>Colours:</strong> red needs a person, amber is waiting on the customer or advisor, green is done. Grey cases are moving on their own.
             </p>
           </>
         )}
@@ -1422,14 +1704,14 @@ function LivePolicyWorkflow({ busy, result, onSubmit }) {
     const riskCommencementDate = String(form.get('riskCommencementDate'))
     const maturityDate = String(form.get('maturityDate'))
     if (maturityDate <= riskCommencementDate) {
-      setError('Maturity date must be after the risk commencement date.')
+      setError('Maturity date must be after the policy start date.')
       return
     }
     const today = new Date()
     const latestMaturity = new Date(today)
     latestMaturity.setFullYear(latestMaturity.getFullYear() + 1)
     if (maturityDate <= localDateInput(today) || maturityDate > localDateInput(latestMaturity)) {
-      setError('For this demo flow, choose a future maturity date within the next 12 months.')
+      setError('Choose a maturity date within the next 12 months. That is when the journey starts.')
       return
     }
 
@@ -1446,22 +1728,22 @@ function LivePolicyWorkflow({ busy, result, onSubmit }) {
   return (
       <form className="live-workflow-form" onSubmit={handleSubmit}>
         <label>
-          Partner ID
+          Customer reference
           <input name="partnerId" required placeholder="e.g. PARTNER-DEMO-10004" />
         </label>
         <label>
-          Policy ID <span className="form-hint">(optional)</span>
+          Policy number <span className="form-hint">(optional)</span>
           <input name="policyId" placeholder="Generated if left blank" />
         </label>
         <label>
-          Owner
-          <select name="owner" defaultValue="CLE-TEAM">
-            <option value="CLE-TEAM">CLE team (CLE)</option>
-            <option value="EXTERNAL-BROKER">External broker (non-CLE)</option>
+          Who advises this customer?
+          <select name="owner" defaultValue="EXTERNAL-BROKER">
+            <option value="EXTERNAL-BROKER">A broker (broker-managed)</option>
+            <option value="CLE-TEAM">In-House Sales (direct)</option>
           </select>
         </label>
         <label>
-          Risk commencement date
+          Policy start date
           <input name="riskCommencementDate" type="date" required defaultValue={dateDefaults.today} />
         </label>
         <label>
@@ -1471,12 +1753,53 @@ function LivePolicyWorkflow({ busy, result, onSubmit }) {
         {error ? <p className="workflow-message workflow-error" role="alert">{error}</p> : null}
         {result ? <p className={`workflow-message workflow-${result.kind}`} role="status">{result.message}</p> : null}
         <div className="live-workflow-footer">
-          <span>Demo only: the backend uses an in-memory store.</span>
+          <span>The case opens automatically if the policy matures within 12 months.</span>
           <button className="button button-primary" type="submit" disabled={busy}>
-            {busy ? 'Running journey…' : 'Create policy & run journey'}
+            {busy ? 'Opening case…' : 'Create policy & open case'}
           </button>
         </div>
       </form>
+  )
+}
+
+/**
+ * The case worker's view of a validation exception: what conflicts, the
+ * evidence already on the case, and one action to release it.
+ */
+function ExceptionReview({ selectedCase, busy, error, onResolve }) {
+  const [note, setNote] = useState(DEFAULT_REVIEW_NOTE)
+  const flagged = [...selectedCase.journeyEvents].reverse().find((event) => event.action === 'VALIDATION_CONFLICT')
+  const evidence = [
+    ['Policyholder', selectedCase.customer],
+    ['Advised option', maturityOptionLabels[selectedCase.maturityOption] || selectedCase.maturityOption],
+    ['Documents received', selectedCase.uploadedDocuments.map((document) => documentLabels[document] || document).join(', ') || 'None'],
+    ['Advisor', ownerLabels[selectedCase.owner] || selectedCase.owner],
+  ]
+
+  return (
+    <section className="exception-review" aria-label="Exception review">
+      <header>
+        <p className="eyebrow">EXCEPTION · REVIEW REQUIRED</p>
+        <h2>Payment held: bank details need verification</h2>
+        <p>{selectedCase.exceptionReason.charAt(0).toUpperCase() + selectedCase.exceptionReason.slice(1)}</p>
+        {flagged ? <small>Flagged automatically {formatEventDate(flagged.at)}. Routine processing has continued on all other cases.</small> : null}
+      </header>
+      <dl className="exception-evidence">
+        {evidence.map(([label, value]) => (
+          <div key={label}><dt>{label}</dt><dd>{value}</dd></div>
+        ))}
+      </dl>
+      <label className="exception-note">
+        Review note
+        <textarea rows={2} value={note} onChange={(event) => setNote(event.target.value)} />
+      </label>
+      {error ? <p className="workflow-message workflow-error" role="alert">{error}</p> : null}
+      <div className="exception-actions">
+        <button className="button button-primary exception-approve-button" type="button" disabled={busy} onClick={() => onResolve(note)}>
+          {busy ? 'Releasing…' : 'Approve and release'}
+        </button>
+      </div>
+    </section>
   )
 }
 
@@ -1496,8 +1819,8 @@ function LaneComparison({ cases, onOpen }) {
     <>
       <section className="panel">
         <PanelHeading
-          title="Every case sorts itself"
-          detail="This happens whenever an answer arrives — it is not a date in the journey"
+          title="Processing lanes"
+          detail="Cases sorted by what they need next"
         />
         <div className="lane-columns">
           {groups.map(({ lane, meta, items }) => (
@@ -1516,28 +1839,18 @@ function LaneComparison({ cases, onOpen }) {
                       ? 'Needs a person'
                       : lane === 'AMBER'
                         ? `Waiting on ${item.outstandingDocuments.map((d) => documentLabels[d] || d).join(', ')}`
-                        : 'Finished with no handling'}
+                        : 'Processed automatically'}
                   </small>
                 </button>
-              )) : <p className="lane-column-empty">Nobody here yet.</p>}
+              )) : <p className="lane-column-empty">No cases.</p>}
             </div>
           ))}
         </div>
         {waiting.length ? (
           <p className="muted-copy">
-            {waiting.length} case{waiting.length === 1 ? '' : 's'} not sorted yet — we are still waiting
-            to hear back.
+            {waiting.length} case{waiting.length === 1 ? '' : 's'} not yet sorted, awaiting a customer response.
           </p>
         ) : null}
-      </section>
-
-      <section className="panel">
-        <PanelHeading title="Why this matters" detail="Where the people go" />
-        <p className="muted-copy">
-          Green finishes on its own. Amber gets one specific question, not a reminder letter.
-          Only red needs somebody to pick up the phone. That is the whole point: we are not trying
-          to automate everything, we are trying to make sure people only touch the cases that need them.
-        </p>
       </section>
     </>
   )
@@ -1551,7 +1864,7 @@ function BackendCasesTable({ cases, onOpen, highlightCaseId }) {
           <tr>
             <th>Case</th>
             <th>Policy</th>
-            <th>Owner</th>
+            <th>Advisor</th>
             <th>SLA</th>
             <th>Lane</th>
             <th>Case status</th>
@@ -1571,7 +1884,7 @@ function BackendCasesTable({ cases, onOpen, highlightCaseId }) {
                 <small>{caseNextAction(item.backendStatus)}</small>
               </td>
               <td>{item.policy}</td>
-              <td>{item.owner}</td>
+              <td>{ownerLabels[item.owner] || item.owner}</td>
               <td>{item.sla}</td>
               <td><LanePill lane={item.processingLane} short /></td>
               <td><StatusPill tone={caseSignal(item.backendStatus)}>{item.status}</StatusPill></td>
@@ -1636,15 +1949,24 @@ const adviceChannels = ['Telephone', 'Video', 'Face to face', 'Digital advice ro
  * The binding selection is made here rather than by the customer, so the
  * rationale is captured at the same moment.
  */
+/** Tomorrow at 10:00, as a value for a datetime-local input. */
+function defaultConversationTime() {
+  const date = new Date()
+  date.setDate(date.getDate() + 1)
+  date.setHours(10, 0, 0, 0)
+  return `${localDateInput(date)}T10:00`
+}
+
 function AdviceWorkspace({
-  selectedCase, busy, error, onAcceptLead, onBookAppointment, onRecordAdvice, onPreviewCustomer,
+  selectedCase, busy, error, onAcceptLead, onScheduleConversation, onRecordAdvice, onPreviewCustomer,
 }) {
   const policyState = usePolicyDetails(selectedCase.policy)
   const pot = mockPotValue(selectedCase.policy)
-  // Pre-filled so the presenter only has to click.
+  // Pre-filled so the presenter only has to confirm each step.
   const [recommended, setRecommended] = useState(selectedCase.maturityOption || 'ANNUITY')
   const [rationale, setRationale] = useState(DEFAULT_RATIONALE)
   const [channel, setChannel] = useState(adviceChannels[0])
+  const [conversationAt, setConversationAt] = useState(defaultConversationTime)
   // Captured once so the countdown stays stable across re-renders.
   const [openedAt] = useState(() => Date.now())
 
@@ -1653,28 +1975,93 @@ function AdviceWorkspace({
   const appointmentBooked = Boolean(selectedCase.appointmentAt)
   const adviceDone = Boolean(advice)
   const status = selectedCase.backendStatus
-  const awaitingAdvice = [
-    'CLE_OWNER_DETECTED', 'NON_CLE_OWNER_DETECTED',
-    'MATURITY_PACKAGE_SENT', 'ADVICE_REQUESTED', 'APPOINTMENT_BOOKED',
-  ].includes(status)
+  // The broker cannot act until the customer asks for advice.
+  const waitingForCustomer = ['NEW', 'MATURITY_DETECTED', 'CLE_OWNER_DETECTED', 'NON_CLE_OWNER_DETECTED'].includes(status)
+  const canAct = ['ADVICE_REQUESTED', 'APPOINTMENT_BOOKED'].includes(status) && !adviceDone
+  const currentStep = adviceDone ? 4 : !leadAccepted ? 1 : !appointmentBooked ? 2 : 3
+  const requestedEvent = [...selectedCase.journeyEvents].reverse().find((event) => event.action === 'ADVICE_REQUESTED')
   const monthsToMaturity = policyState.data?.maturityDate
     ? Math.max(0, Math.round(
       (new Date(`${policyState.data.maturityDate}T12:00:00`).getTime() - openedAt) / (86400000 * 30.44),
     ))
     : null
 
-  const advisor = selectedCase.ownerType === 'NON_CLE' ? 'Meridian Financial' : 'In-House Sales'
+  const advisor = selectedCase.ownerType === 'NON_CLE' ? 'Broker' : 'In-House Sales'
+  const client = firstName(selectedCase.customer)
 
-  const handleRecordAdvice = () => {
-    if (!recommended) return
-    onRecordAdvice({ recommendedOption: recommended, rationale, advisor, channel })
-  }
+  const steps = [
+    {
+      title: 'Accept the lead',
+      done: leadAccepted ? `Accepted ${formatEventDate(selectedCase.leadAcceptedAt)}` : '',
+      body: (
+        <>
+          <p>Take ownership of {client}’s advice request. The client is notified that her broker will be in touch.</p>
+          <button className="button button-primary" type="button" disabled={busy} onClick={() => onAcceptLead(advisor)}>
+            {busy ? 'Accepting…' : 'Accept lead'}
+          </button>
+        </>
+      ),
+    },
+    {
+      title: 'Schedule the advice conversation',
+      done: appointmentBooked ? `Scheduled for ${formatEventDate(selectedCase.appointmentAt)}` : '',
+      body: (
+        <>
+          <div className="process-step-fields">
+            <label>
+              Channel
+              <select value={channel} onChange={(event) => setChannel(event.target.value)}>
+                {adviceChannels.map((item) => <option value={item} key={item}>{item}</option>)}
+              </select>
+            </label>
+            <label>
+              Date and time
+              <input type="datetime-local" value={conversationAt} onChange={(event) => setConversationAt(event.target.value)} />
+            </label>
+          </div>
+          <button
+            className="button button-primary"
+            type="button"
+            disabled={busy || !conversationAt}
+            onClick={() => onScheduleConversation({
+              appointmentAt: new Date(conversationAt).toISOString(),
+              advisor,
+              channel,
+            })}
+          >
+            {busy ? 'Scheduling…' : 'Schedule conversation'}
+          </button>
+        </>
+      ),
+    },
+    {
+      title: 'Record the advised option',
+      done: adviceDone ? `${maturityOptionLabels[advice.recommendedOption] || advice.recommendedOption} · ${advice.channel}` : '',
+      body: (
+        <>
+          <p>Select the advised option above and confirm the rationale. This sets the binding selection and issues the formal pack.</p>
+          <label className="advice-rationale-field">
+            Rationale
+            <textarea rows={3} value={rationale} onChange={(event) => setRationale(event.target.value)} />
+          </label>
+          <button
+            className="button button-primary"
+            type="button"
+            disabled={busy || !recommended}
+            onClick={() => onRecordAdvice({ recommendedOption: recommended, rationale, advisor, channel })}
+          >
+            {busy ? 'Recording…' : `Record advice: ${maturityOptionLabels[recommended]}`}
+          </button>
+        </>
+      ),
+    },
+  ]
 
   return (
     <section className="advice-workspace" aria-label="Advice workspace">
       <header className="advice-workspace-head">
         <div>
-          <p className="eyebrow">{advisor.toUpperCase()}</p>
+          <p className="eyebrow">ADVICE LEAD · {advisor === 'Broker' ? 'BROKER-MANAGED' : 'IN-HOUSE SALES'}</p>
           <h2>{selectedCase.customer}</h2>
           <p className="muted-copy">
             Matures in {monthsToMaturity == null ? '—' : `${monthsToMaturity} months`}
@@ -1691,65 +2078,38 @@ function AdviceWorkspace({
       {error ? <p className="workflow-message workflow-error" role="alert">{error}</p> : null}
 
       <section className="panel client-snapshot">
-        <PanelHeading title="What you need to know" detail="Pulled together for you — nothing to chase" />
+        <PanelHeading title="Client overview" detail="Consolidated from the policy and journey record" />
         <div className="snapshot-row">
           <div className="snapshot-pot">
-            <span>Her pot</span>
+            <span>{client}’s pot</span>
             <strong>{formatEuro(pot)}</strong>
-            <small>Illustrative demo value.</small>
+            <small>Illustrative value</small>
           </div>
           <div className="lead-fields">
             <div>
-              <span>She is leaning towards</span>
+              <span>Client preference</span>
               <strong>
                 {selectedCase.customerPreference
                   ? maturityOptionLabels[selectedCase.customerPreference]
-                  : 'Not said yet'}
+                  : 'None stated'}
               </strong>
             </div>
-            <div><span>Maturity date</span><strong>{policyState.data?.maturityDate || '—'}</strong></div>
-            <div>
-              <span>Still outstanding</span>
-              <strong>
-                {selectedCase.outstandingDocuments.length
-                  ? selectedCase.outstandingDocuments.map((d) => documentLabels[d] || d).join(', ')
-                  : 'Nothing'}
-              </strong>
-            </div>
+            <div><span>Maturity date</span><strong>{policyState.data?.maturityDate ? formatEventDate(policyState.data.maturityDate) : '—'}</strong></div>
+            <div><span>Advice requested</span><strong>{requestedEvent ? formatEventDate(requestedEvent.at) : '—'}</strong></div>
           </div>
         </div>
         <div className="lead-actions">
-          {leadAccepted ? (
-            <span className="lead-accepted">✓ Lead accepted</span>
-          ) : (
-            <button className="button button-primary" type="button" disabled={busy} onClick={() => onAcceptLead(advisor)}>
-              {busy ? 'Working…' : 'Accept lead'}
-            </button>
-          )}
-          {appointmentBooked ? (
-            <span className="lead-accepted">✓ Appointment {formatEventDate(selectedCase.appointmentAt)}</span>
-          ) : (
-            <button
-              className="button button-secondary"
-              type="button"
-              disabled={busy}
-              onClick={() => onBookAppointment({
-                appointmentAt: new Date(Date.now() + 3 * 86400000).toISOString(),
-                advisor,
-                channel,
-              })}
-            >
-              {busy ? 'Working…' : 'Book appointment'}
-            </button>
-          )}
+          {waitingForCustomer ? (
+            <span className="lead-waiting">Awaiting the client’s advice request.</span>
+          ) : null}
           <button className="text-button" type="button" onClick={() => onPreviewCustomer(selectedCase.id)}>
-            See her screen
+            View the client’s portal
           </button>
         </div>
       </section>
 
       <section className="panel option-comparison">
-        <PanelHeading title="Her options, side by side" detail="The same figures she sees" />
+        <PanelHeading title="Options side by side" detail={`The figures ${client} sees in her portal`} />
         <div className="comparison-grid">
           {['ANNUITY', 'LUMP_SUM', 'REINVEST'].map((option) => {
             const info = optionInformation[option]
@@ -1759,19 +2119,19 @@ function AdviceWorkspace({
                 ? formatEuro(pot)
                 : `${formatEuro(projectedValue(pot, 0.04, 10))} after 10 years`
             const isPreference = selectedCase.customerPreference === option
-            const isRecommended = recommended === option
+            const isRecommended = (adviceDone ? advice.recommendedOption : recommended) === option
             return (
               <button
                 key={option}
                 type="button"
                 className={`comparison-card${isRecommended ? ' comparison-selected' : ''}`}
                 aria-pressed={isRecommended}
-                disabled={!awaitingAdvice || busy}
+                disabled={!canAct || currentStep !== 3 || busy}
                 onClick={() => setRecommended(option)}
               >
                 <span className="comparison-head">
                   <strong>{maturityOptionLabels[option]}</strong>
-                  {isPreference ? <em className="comparison-flag">Her steer</em> : null}
+                  {isPreference ? <em className="comparison-flag">Client preference</em> : null}
                 </span>
                 <span className="comparison-headline">{headline}</span>
                 <span className="comparison-detail">{info.heading}</span>
@@ -1781,61 +2141,29 @@ function AdviceWorkspace({
         </div>
       </section>
 
-      {adviceDone ? (
-        <section className="panel advice-recorded">
-          <PanelHeading title="Advice recorded" detail="Saved against her case as the reason for the option" />
-          <div className="advice-recorded-head">
-            <StatusPill tone="green">{maturityOptionLabels[advice.recommendedOption] || advice.recommendedOption}</StatusPill>
-            <span>{advice.advisedBy} · {advice.channel}</span>
-          </div>
-          <p>{advice.rationale}</p>
-        </section>
-      ) : awaitingAdvice ? (
-        <section className="panel advice-form">
-          <PanelHeading
-            title="Record your advice"
-            detail="Sets her option and starts the paperwork"
-          />
-          <div className="advice-form-grid">
-            <label>
-              Option advised
-              <select value={recommended} onChange={(event) => setRecommended(event.target.value)}>
-                {['ANNUITY', 'LUMP_SUM', 'REINVEST'].map((option) => (
-                  <option value={option} key={option}>{maturityOptionLabels[option]}</option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Advice given by
-              <select value={channel} onChange={(event) => setChannel(event.target.value)}>
-                {adviceChannels.map((item) => <option value={item} key={item}>{item}</option>)}
-              </select>
-            </label>
-          </div>
-          <label className="advice-rationale-field">
-            Why this option
-            <textarea
-              rows={3}
-              value={rationale}
-              onChange={(event) => setRationale(event.target.value)}
-            />
-          </label>
-          <div className="advice-form-actions">
-            <button
-              className="button button-primary"
-              type="button"
-              disabled={busy || !recommended}
-              onClick={handleRecordAdvice}
-            >
-              {busy ? 'Recording…' : 'Record advice'}
-            </button>
-          </div>
-          <p className="backend-disclaimer">
-            Demo only. Production would need a suitability assessment and her documented authority
-            before anything binding is recorded.
-          </p>
-        </section>
-      ) : null}
+      <section className="panel advice-process">
+        <PanelHeading
+          title="Advice process"
+          detail={adviceDone ? 'Complete. The rationale is saved against the case.' : 'Three steps, recorded against the case'}
+        />
+        <ol className="process-steps">
+          {steps.map((step, index) => {
+            const number = index + 1
+            const state = number < currentStep ? 'done' : number === currentStep ? 'current' : 'upcoming'
+            return (
+              <li className={`process-step ${state}`} key={step.title}>
+                <span className="process-step-marker" aria-hidden="true">{state === 'done' ? '✓' : number}</span>
+                <div className="process-step-content">
+                  <strong>{step.title}</strong>
+                  {state === 'done' && step.done ? <small>{step.done}</small> : null}
+                  {state === 'current' && canAct ? <div className="process-step-body">{step.body}</div> : null}
+                </div>
+              </li>
+            )
+          })}
+        </ol>
+        {adviceDone ? <p className="advice-process-rationale">{advice.rationale}</p> : null}
+      </section>
     </section>
   )
 }
@@ -1872,7 +2200,7 @@ function BrokerCasesView({
   actionError,
   onRequestInformation,
   onAcceptLead,
-  onBookAppointment,
+  onScheduleConversation,
   onRecordAdvice,
   onPreviewCustomer,
 }) {
@@ -1902,8 +2230,8 @@ function BrokerCasesView({
         <Brand subline="Retirement Hub for brokers" />
         <nav className="top-nav" aria-label="Broker navigation">
           <button className={page !== 'case' ? 'top-nav-link active' : 'top-nav-link'} onClick={() => onSelectPage('list')}>Cases</button>
-          <button className="top-nav-link" onClick={() => onNotify('You are up to date. Notifications are demo-only.')}>Notifications</button>
-          <span className="user-name">Demo access</span>
+          <button className="top-nav-link" onClick={() => onNotify('You are up to date.')}>Notifications</button>
+          <span className="user-name">Broker consultant</span>
         </nav>
       </header>
       <main className="broker-main">
@@ -1915,18 +2243,21 @@ function BrokerCasesView({
               busy={actionBusy}
               error={actionError}
               onAcceptLead={onAcceptLead}
-              onBookAppointment={onBookAppointment}
+              onScheduleConversation={onScheduleConversation}
               onRecordAdvice={onRecordAdvice}
               onPreviewCustomer={onPreviewCustomer}
               onNotify={onNotify}
             />
-            <BackendCaseDetail
-              selectedCase={selectedCase}
-              actionBusy={actionBusy}
-              actionError={actionError}
-              onRequestInformation={onRequestInformation}
-              onPreviewCustomer={onPreviewCustomer}
-            />
+            <details className="panel broker-case-record">
+              <summary>Full case record and audit trail</summary>
+              <BackendCaseDetail
+                selectedCase={selectedCase}
+                actionBusy={actionBusy}
+                actionError={actionError}
+                onRequestInformation={onRequestInformation}
+                onPreviewCustomer={onPreviewCustomer}
+              />
+            </details>
             <BrokerContactLog
               caseId={selectedCase.id}
               value={callNote}
@@ -1947,9 +2278,9 @@ function BrokerCasesView({
           <>
             <header className="page-heading broker-heading">
               <div>
-                <p className="eyebrow">BROKER WORKSPACE · LIVE API</p>
-                <h1>Your client queue</h1>
-                <p className="muted-copy">A clear view of case status and the next available step.</p>
+                <p className="eyebrow">BROKER CONSULTANT</p>
+                <h1>Your clients approaching maturity</h1>
+                <p className="muted-copy">Qualified advice leads for your clients, ordered by urgency.</p>
               </div>
               <button className="button button-secondary" type="button" onClick={onRetry}>Refresh</button>
             </header>
@@ -1968,7 +2299,7 @@ function BrokerCasesView({
               <div className="client-list-heading">
                 <div>
                   <h2>Client cases</h2>
-                  <span>{visibleCases.length} of {cases.length} live cases</span>
+                  <span>{visibleCases.length} of {cases.length} clients</span>
                 </div>
                 <label className="broker-search">
                   <span className="visually-hidden">Search cases</span>
@@ -2010,16 +2341,20 @@ function BrokerCasesView({
                     <StatusPill tone={caseSignal(item.backendStatus)}>{item.status}</StatusPill>
                     <small>Case {item.id}</small>
                   </div>
-                  <button className="button button-primary" type="button" onClick={() => {
-                    onSelectCase(item.id)
-                    onSelectPage('case')
-                  }}>{caseActionLabel(item.backendStatus)}</button>
+                  <button
+                    className={`button button-primary${item.backendStatus === 'ADVICE_REQUESTED' ? ' pick-up-lead' : ''}`}
+                    type="button"
+                    onClick={() => {
+                      onSelectCase(item.id)
+                      onSelectPage('case')
+                    }}
+                  >{caseActionLabel(item.backendStatus)}</button>
                 </article>
               )) : (
                 <EmptyState title="No matching cases" detail="Try another status filter or search term." />
               )}
               <p className="prototype-note">
-                The API does not filter cases by broker ownership. This demo queue may include cases that would not belong to a signed-in broker.
+                Showing broker-managed clients only. Direct clients go to In-House Sales.
               </p>
             </section>
           </>
@@ -2035,97 +2370,66 @@ function BackendCaseDetail({
   actionError,
   onRequestInformation,
   onIssueFormalPack,
+  onResolveException,
   onPreviewCustomer,
+  onViewTimeline,
 }) {
   const [emailPreviewOpen, setEmailPreviewOpen] = useState(false)
   const policyState = usePolicyDetails(selectedCase.policy)
   const fields = [
     ['Case ID', selectedCase.id],
-    ['Case status', selectedCase.backendStatus],
-    ['Policy ID', selectedCase.policy],
-    ['Owner', selectedCase.owner],
-    ['Owner type', selectedCase.ownerType],
-    ['Routing email', selectedCase.email],
-    ['Maturity option', selectedCase.maturityOption
+    ['Status', selectedCase.status],
+    ['Policy', selectedCase.policy],
+    ['Advisor', ownerLabels[selectedCase.owner] || selectedCase.owner],
+    ['Relationship', ownerTypeLabels[selectedCase.ownerType] || 'Not identified'],
+    ['Routed to', selectedCase.email],
+    ['Agreed option', selectedCase.maturityOption
       ? maturityOptionLabels[selectedCase.maturityOption] || selectedCase.maturityOption
-      : 'Not selected'],
-    ['Documents recorded', selectedCase.uploadedDocuments.length
+      : 'Not agreed yet'],
+    ['Documents received', selectedCase.uploadedDocuments.length
       ? selectedCase.uploadedDocuments.map((document) => documentLabels[document] || document).join(', ')
-      : 'None'],
+      : 'None yet'],
     ['SLA', selectedCase.sla],
-    ['Created', selectedCase.createdAt],
-    ['Last updated', selectedCase.updatedAt],
+    ['Opened', formatEventDate(selectedCase.createdAt) || selectedCase.createdAt],
+    ['Last updated', formatEventDate(selectedCase.updatedAt) || selectedCase.updatedAt],
   ]
 
   return (
     <div className="case-detail">
       <header className="detail-header">
         <div>
-          <p className="eyebrow">CASE RECORD · LIVE API</p>
+          <p className="eyebrow">CASE RECORD</p>
           <h1>{selectedCase.customer}</h1>
           <p className="muted-copy">{selectedCase.policy} · Case ID {selectedCase.id}</p>
         </div>
-        <StatusPill tone={statusTone(selectedCase.status)}>{selectedCase.status}</StatusPill>
+        <StatusPill tone={caseSignal(selectedCase.backendStatus)}>{selectedCase.status}</StatusPill>
       </header>
-      <CaseStatusSummary status={selectedCase.backendStatus} />
-      <ProcessingLaneBanner
-        lane={selectedCase.processingLane}
-        exceptionReason={selectedCase.exceptionReason}
-        outstanding={selectedCase.outstandingDocuments}
-      />
-      <CaseProgressTrail status={selectedCase.backendStatus} />
-      <div className="detail-grid backend-detail-grid">
-        <section className="panel">
-          <PanelHeading title="Case overview" detail="Backend case and linked policy information" />
-          <div className="case-agent-summary">
-            <strong>What the agent found</strong>
-            <p>{selectedCase.detail}</p>
-          </div>
-          <div className="backend-case-fields">
-            {fields.map(([label, value]) => (
-              <div key={label}><span>{label}</span><strong>{value}</strong></div>
-            ))}
-            {policyState.status === 'success' && policyState.data ? (
-              <>
-                <div><span>Partner ID</span><strong>{policyState.data.partnerId || 'Not provided'}</strong></div>
-                <div><span>Risk commencement</span><strong>{policyState.data.riskCommencementDate || 'Not provided'}</strong></div>
-                <div><span>Maturity date</span><strong>{policyState.data.maturityDate || 'Not provided'}</strong></div>
-              </>
-            ) : null}
-          </div>
-          {policyState.status === 'loading' ? <p className="inline-state">Loading linked policy details…</p> : null}
-          {policyState.status === 'error' ? <p className="backend-exception-note" role="alert">Could not load linked policy details: {policyState.error}</p> : null}
-        </section>
-        <section className="panel backend-limit-panel">
-          <PanelHeading title="Case workflow" />
-          <p>{selectedCase.detail}</p>
-          <p>
-            Document entries from the backend identify document types only. No file contents are available in this case record.
-          </p>
-          {caseSignal(selectedCase.backendStatus) === 'red' ? (
-            <p className="backend-exception-note">
-              {selectedCase.backendStatus === 'ON_HOLD'
-                ? 'This case is on hold. The demo API does not provide an exception-resolution action.'
-                : 'This case is cancelled. The demo API does not provide a reopen action.'}
-            </p>
-          ) : selectedCase.backendStatus !== 'AWAITING_CUSTOMER'
-            && selectedCase.backendStatus !== 'COMPLETED'
-            && selectedCase.backendStatus !== 'CANCELLED' ? (
-              <div className="backend-action">
-                <button
-                  className="button button-primary"
-                  type="button"
-                  disabled={actionBusy}
-                  onClick={() => onRequestInformation(selectedCase)}
-                >
-                  {actionBusy ? 'Updating case…' : 'Request information'}
-                </button>
-                <p>This updates the case to AWAITING_CUSTOMER; it does not send a message. The endpoint does not filter cases by staff ownership.</p>
-                {actionError ? <p className="workflow-message workflow-error" role="alert">{actionError}</p> : null}
-              </div>
-            ) : null}
+      {onResolveException && selectedCase.backendStatus === 'ON_HOLD'
+        && selectedCase.exceptionReason && selectedCase.maturityOption ? (
+          <ExceptionReview
+            selectedCase={selectedCase}
+            busy={actionBusy}
+            error={actionError}
+            onResolve={onResolveException}
+          />
+        ) : <CaseStatusSummary status={selectedCase.backendStatus} />}
+      {selectedCase.processingLane && !(selectedCase.backendStatus === 'ON_HOLD' && selectedCase.maturityOption) ? (
+        <ProcessingLaneBanner
+          lane={selectedCase.processingLane}
+          exceptionReason={selectedCase.exceptionReason}
+          outstanding={selectedCase.outstandingDocuments}
+          resolvedByReview={selectedCase.journeyEvents.some((event) => event.action === 'EXCEPTION_RESOLVED')}
+        />
+      ) : null}
+      <CaseProgressTrail status={selectedCase.backendStatus} documentStage={Boolean(selectedCase.maturityOption)} />
+      <section className="panel next-step-panel">
+        <PanelHeading title="Actions" />
+        <div className="next-step-body">
+          {selectedCase.backendStatus === 'CANCELLED' ? (
+            <p className="backend-exception-note">This case is cancelled.</p>
+          ) : null}
           {selectedCase.backendStatus === 'AWAITING_CUSTOMER' ? (
-            <p className="backend-action-note">This case is already marked as awaiting the customer. Use the email preview to review suggested contact content.</p>
+            <p className="next-step-note">This case is waiting on the customer.</p>
           ) : null}
           <div className="case-communication-actions">
             {selectedCase.backendStatus === 'IN_PROGRESS' && selectedCase.adviceRecord ? (
@@ -2138,6 +2442,18 @@ function BackendCaseDetail({
                 {actionBusy ? 'Issuing…' : 'Issue the formal pack'}
               </button>
             ) : null}
+            {caseSignal(selectedCase.backendStatus) !== 'red'
+              && !['AWAITING_CUSTOMER', 'COMPLETED', 'CANCELLED'].includes(selectedCase.backendStatus) ? (
+                <button
+                  className="button button-secondary"
+                  type="button"
+                  disabled={actionBusy}
+                  title="Marks the case as waiting on the customer."
+                  onClick={() => onRequestInformation(selectedCase)}
+                >
+                  {actionBusy ? 'Updating case…' : 'Request information'}
+                </button>
+              ) : null}
             <button
               className="button button-secondary"
               type="button"
@@ -2146,12 +2462,42 @@ function BackendCaseDetail({
             >
               Preview annual statement
             </button>
+            {onViewTimeline ? (
+              <button className="button button-secondary" type="button" onClick={onViewTimeline}>
+                Case timeline
+              </button>
+            ) : null}
             <button className="text-button" type="button" onClick={() => onPreviewCustomer(selectedCase.id)}>
-              Open customer journey
+              See the customer’s screen
             </button>
           </div>
-        </section>
-      </div>
+          {actionError ? <p className="workflow-message workflow-error" role="alert">{actionError}</p> : null}
+        </div>
+      </section>
+      <details className="panel case-overview-panel">
+        <summary>
+          <span>Case overview</span>
+          <small>Policy and case details</small>
+        </summary>
+        <div className="case-agent-summary">
+          <strong>Case summary</strong>
+          <p>{selectedCase.detail}</p>
+        </div>
+        <div className="backend-case-fields">
+          {fields.map(([label, value]) => (
+            <div key={label}><span>{label}</span><strong>{value}</strong></div>
+          ))}
+          {policyState.status === 'success' && policyState.data ? (
+            <>
+              <div><span>Customer reference</span><strong>{policyState.data.partnerId || 'Not provided'}</strong></div>
+              <div><span>Policy start</span><strong>{policyState.data.riskCommencementDate || 'Not provided'}</strong></div>
+              <div><span>Maturity date</span><strong>{policyState.data.maturityDate || 'Not provided'}</strong></div>
+            </>
+          ) : null}
+        </div>
+        {policyState.status === 'loading' ? <p className="inline-state">Loading linked policy details…</p> : null}
+        {policyState.status === 'error' ? <p className="backend-exception-note" role="alert">Could not load linked policy details: {policyState.error}</p> : null}
+      </details>
       <CaseAuditTrail events={selectedCase.journeyEvents} />
       {emailPreviewOpen ? (
         <AnnualStatementPreview
@@ -2176,19 +2522,19 @@ function BrokerContactLog({ caseId, value, entries, onChange, onAdd }) {
     <section className="panel broker-contact-log">
       <PanelHeading
         title="Customer contact log"
-        detail="Demo-only notes for this browser session; nothing is sent or saved to the backend."
+        detail="Calls and follow-ups with this client"
       />
       <form className="contact-note-form" onSubmit={handleSubmit}>
-        <label htmlFor={`contact-note-${caseId}`}>Record a call or follow-up note</label>
+        <label htmlFor={`contact-note-${caseId}`}>Add a call or follow-up note</label>
         <textarea
           id={`contact-note-${caseId}`}
           value={value}
           maxLength={400}
           onChange={(event) => onChange(event.target.value)}
-          placeholder="Add a short demo note..."
+          placeholder="e.g. Called to confirm the appointment time"
           required
         />
-        <button className="button button-secondary" type="submit" disabled={!value.trim()}>Add session note</button>
+        <button className="button button-secondary" type="submit" disabled={!value.trim()}>Add note</button>
       </form>
       {entries.length ? (
         <ol className="contact-note-list">
@@ -2199,7 +2545,7 @@ function BrokerContactLog({ caseId, value, entries, onChange, onAdd }) {
             </li>
           ))}
         </ol>
-      ) : <p className="empty-note">No contact notes recorded in this session.</p>}
+      ) : <p className="empty-note">No notes yet.</p>}
     </section>
   )
 }
@@ -2207,16 +2553,17 @@ function BrokerContactLog({ caseId, value, entries, onChange, onAdd }) {
 /**
  * Shows which straight-through-processing lane the case landed in, and why.
  */
-function ProcessingLaneBanner({ lane, exceptionReason, outstanding = [] }) {
+function ProcessingLaneBanner({ lane, exceptionReason, outstanding = [], resolvedByReview = false }) {
   const meta = laneMeta[lane]
+  const detail = lane === 'GREEN' && resolvedByReview
+    ? 'Complete. Released after one review by CLE Operations.'
+    : meta ? meta.detail : 'The lane is decided once the customer responds. Nothing to validate yet.'
 
   return (
     <section className={`lane-banner lane-banner-${meta ? meta.tone : 'neutral'}`} aria-label="Processing lane">
       <LanePill lane={lane} />
       <div className="lane-banner-copy">
-        <strong>
-          {meta ? meta.detail : 'The lane is decided once the customer responds. Nothing to validate yet.'}
-        </strong>
+        <strong>{detail}</strong>
         {exceptionReason ? <p>{exceptionReason}</p> : null}
         {!exceptionReason && lane === 'AMBER' && outstanding.length ? (
           <p>
@@ -2228,24 +2575,44 @@ function ProcessingLaneBanner({ lane, exceptionReason, outstanding = [] }) {
   )
 }
 
-function CaseProgressTrail({ status }) {
+/**
+ * Stages follow the broker-led journey: advice happens before the formal pack,
+ * so the paperwork confirms a decision rather than asking for one.
+ */
+function CaseProgressTrail({ status, documentStage = false }) {
   const currentStep = {
     NEW: 0,
-    MATURITY_DETECTED: 0,
-    CLE_OWNER_DETECTED: 1,
-    NON_CLE_OWNER_DETECTED: 1,
-    MATURITY_PACKAGE_SENT: 2,
-    ADVICE_REQUESTED: 3,
-    APPOINTMENT_BOOKED: 3,
-    AWAITING_CUSTOMER: 3,
-    AWAITING_INFORMATION: 3,
+    MATURITY_DETECTED: 1,
+    // Ownership exceptions stop at advisor routing; document conflicts at documents.
+    ON_HOLD: documentStage ? 4 : 1,
+    CANCELLED: 1,
+    CLE_OWNER_DETECTED: 2,
+    NON_CLE_OWNER_DETECTED: 2,
+    ADVICE_REQUESTED: 2,
+    APPOINTMENT_BOOKED: 2,
     IN_PROGRESS: 3,
-    ON_HOLD: 3,
-    CANCELLED: 3,
+    MATURITY_PACKAGE_SENT: 4,
+    AWAITING_INFORMATION: 4,
+    AWAITING_CUSTOMER: 4,
     // Past the final index so every stage renders as done for a completed case.
     COMPLETED: 5,
   }[status] ?? 0
-  const stages = ['Case raised', 'Owner identified', 'Statement prepared', 'Customer journey', 'Documents complete']
+  const stages = ['Case opened', 'Advisor identified', 'Advice', 'Formal pack', 'Documents']
+  // What the current stage is waiting on, so it reads as in progress.
+  const currentDetail = {
+    NEW: 'Checking',
+    MATURITY_DETECTED: 'Checking',
+    ON_HOLD: 'Needs a person',
+    CANCELLED: 'Cancelled',
+    CLE_OWNER_DETECTED: 'Waiting for the customer',
+    NON_CLE_OWNER_DETECTED: 'Waiting for the customer',
+    ADVICE_REQUESTED: 'Advice requested',
+    APPOINTMENT_BOOKED: 'Appointment booked',
+    IN_PROGRESS: 'Issuing now',
+    MATURITY_PACKAGE_SENT: 'Waiting for documents',
+    AWAITING_INFORMATION: 'One document missing',
+    AWAITING_CUSTOMER: 'Waiting for the customer',
+  }[status] || 'In progress'
 
   return (
     <section className="case-progress-panel" aria-label="Case journey stage">
@@ -2255,10 +2622,10 @@ function CaseProgressTrail({ status }) {
           <li className={index < currentStep ? 'stage-done' : index === currentStep ? 'stage-current' : ''} key={stage}>
             <span aria-hidden="true">{index < currentStep ? '✓' : index + 1}</span>
             <strong>{stage}</strong>
+            {index === currentStep ? <em className="stage-current-tag">In progress · {currentDetail}</em> : null}
           </li>
         ))}
       </ol>
-      <small>Stage is inferred from the current API status; historical transition timestamps are not available.</small>
     </section>
   )
 }
@@ -2288,20 +2655,19 @@ function PensionPotCard({ policy, potValue, caseStatus, selectedOption, outstand
       <div className="pension-overview-copy">
         <p className="eyebrow">YOUR RETIREMENT SAVINGS</p>
         <h2 id="pension-overview-title">Your pension pot</h2>
-        <div className="valuation-status"><span className="signal-dot" />Mock demonstration value</div>
+        <div className="valuation-status"><span className="signal-dot" />Illustrative value</div>
         <strong className="pension-pot-value">{formatEuro(potValue)}</strong>
         <p className="muted-copy">
-          Synthetic sample only; this amount is not returned by the backend or a real pension valuation.
+          Illustrative value. Your final amount is confirmed at maturity.
         </p>
         <div className="pension-overview-details">
           <div><span>Policy</span><strong>{policy}</strong></div>
-          <div><span>Case status</span><strong>{caseStatus}</strong></div>
+          <div><span>Status</span><strong>{customerStatus(caseStatus)}</strong></div>
           <div><span>Your next step</span><strong>{selectedOption ? `${outstandingCount} ${outstandingCount === 1 ? 'document' : 'documents'} outstanding` : 'Talk to your advisor'}</strong></div>
         </div>
       </div>
       <div className="pension-illustration-wrap">
         <PensionPotVisual />
-        <span>Illustrative graphic · not to scale</span>
       </div>
     </section>
   )
@@ -2332,37 +2698,27 @@ function JourneyProgress({ selectedOption, outstandingCount, status }) {
   )
 }
 
+/** Fixed, round-number pots for the seeded scenarios; other policies fall back to a stable hash. */
 const mockPotValues = {
-  'CLE-END2END-20261006': 248000,
-  'MOCK-STATUS-NEW-20261006': 125000,
-  'MOCK-STATUS-MATURITY_DETECTED-20261006': 187500,
-  'MOCK-STATUS-CLE_OWNER_DETECTED-20261006': 221000,
-  'MOCK-STATUS-NON_CLE_OWNER_DETECTED-20261006': 164000,
-  'MOCK-STATUS-AWAITING_INFORMATION-20261006': 203500,
-  'MOCK-STATUS-IN_PROGRESS-20261006': 145000,
-  'MOCK-STATUS-AWAITING_CUSTOMER-20261006': 178250,
-  'MOCK-STATUS-ON_HOLD-20261006': 196000,
-  'MOCK-STATUS-COMPLETED-20261006': 232000,
-  'MOCK-STATUS-CANCELLED-20261006': 112500,
+  'POL-2027-10021': 248000,
+  'POL-2027-10044': 186500,
+  'POL-2027-10078': 212000,
 }
 
 const optionInformation = {
   ANNUITY: {
-    heading: 'Turn some or all of your pot into regular income',
-    detail: 'An annuity can provide a regular income for life. The amount and terms depend on provider rates and personal choices, which are not modelled in this demo.',
-    tradeoff: 'A more predictable income may mean less access to the money used to buy it.',
+    heading: 'A regular income from some or all of your pot',
+    detail: 'An annuity can pay you a regular income for life. How much you get depends on rates at the time you buy it.',
     illustration: 'income',
   },
   LUMP_SUM: {
-    heading: 'Take your pension pot as cash',
-    detail: 'A lump sum gives you access to the full mock pot in one go. You decide how to use and manage it.',
-    tradeoff: 'Tax, sustainability and future income are not calculated in this demo.',
+    heading: 'Your pension pot paid out as cash',
+    detail: 'A lump sum gives you the whole pot in one go. You decide how to use and manage it.',
     illustration: 'cash',
   },
   REINVEST: {
-    heading: 'Keep your pot invested',
+    heading: 'Your pot stays invested',
     detail: 'Your investments remain exposed to markets, so their value may rise or fall over time.',
-    tradeoff: 'Illustrations are not guaranteed; no fees, tax, inflation or additional contributions are modelled.',
     illustration: 'growth',
   },
 }
@@ -2421,9 +2777,11 @@ function OptionIllustration({ kind }) {
 }
 
 /** Sample figures for one option. The customer reads; the advisor decides. */
-function OptionReview({ option, pot, preference, busy, onBack, onRequestAdvice }) {
+function OptionReview({ option, options, pot, preference, status, busy, onBack, onSelectOption, onRequestAdvice }) {
   const information = optionInformation[option]
   const isPreferred = preference === option
+  // Once advice is requested the request stands for every option, not just the one she was viewing.
+  const adviceRequested = status === 'ADVICE_REQUESTED' || status === 'APPOINTMENT_BOOKED'
   const range = option === 'ANNUITY'
     ? [['Lower example', pot * 0.04 / 12], ['Higher example', pot * 0.06 / 12]]
     : option === 'LUMP_SUM'
@@ -2436,18 +2794,34 @@ function OptionReview({ option, pot, preference, busy, onBack, onRequestAdvice }
 
   return (
     <div className="option-review" aria-labelledby="option-review-heading">
-      <button className="text-button option-back" type="button" onClick={onBack}>← Back to all options</button>
+      <div className="option-review-nav">
+        <button className="text-button option-back" type="button" onClick={onBack}>← All options</button>
+        <div className="option-tabs" role="tablist" aria-label="Maturity options">
+          {options.map((item) => (
+            <button
+              key={item}
+              type="button"
+              role="tab"
+              aria-selected={item === option}
+              className={item === option ? 'option-tab active' : 'option-tab'}
+              onClick={() => onSelectOption(item)}
+            >
+              {maturityOptionLabels[item] || item}
+            </button>
+          ))}
+        </div>
+      </div>
       <div className="option-review-heading">
         <div className={`option-art option-art-${information.illustration}`}><OptionIllustration kind={information.illustration} /></div>
         <div>
-          <p className="eyebrow">OPTION INFORMATION · DEMO ILLUSTRATION</p>
+          <p className="eyebrow">ILLUSTRATIVE FIGURES</p>
           <h4 id="option-review-heading">{maturityOptionLabels[option]}</h4>
           <strong>{information.heading}</strong>
         </div>
       </div>
       <p className="option-explanation">{information.detail}</p>
       <div className="option-projection">
-        <div className="projection-pot"><span>Your sample pot</span><strong>{formatEuro(pot)}</strong></div>
+        <div className="projection-pot"><span>Your pot</span><strong>{formatEuro(pot)}</strong></div>
         {range.map(([label, value]) => (
           <div className="projection-row" key={label}>
             <span>{label}</span>
@@ -2461,30 +2835,37 @@ function OptionReview({ option, pot, preference, busy, onBack, onRequestAdvice }
         ))}
         <small>
           {option === 'ANNUITY'
-            ? 'Hypothetical conversion range of 4–6% of the mock pot per year, divided monthly. Not a quote or guaranteed income.'
+            ? 'Example range based on 4–6% of your pot a year, paid monthly. Not a quote.'
             : option === 'LUMP_SUM'
-              ? 'Illustrative gross amount before any tax or deductions; no tax calculation is included.'
-              : 'Illustrative compound-growth scenarios after maturity, assuming no contributions, fees, tax or inflation.'}
+              ? 'Before any tax.'
+              : 'Example growth rates only, before fees, tax and inflation. Not guaranteed.'}
         </small>
       </div>
-      <p className="option-tradeoff"><strong>Things to consider:</strong> {information.tradeoff}</p>
       <p className="backend-disclaimer">
-        This is information only, not a recommendation. Your advisor will talk the options through with you
-        and record your option with you.
+        This is information, not advice or a recommendation. Only your advisor can advise you on which
+        option suits you.
       </p>
       <div className="option-review-actions">
-        <button className="button button-secondary" type="button" onClick={onBack}>Compare other options</button>
-        <button
-          className="button button-primary"
-          type="button"
-          disabled={busy || isPreferred}
-          onClick={() => onRequestAdvice(option)}
-        >
-          {isPreferred
-            ? 'Shared with your advisor'
-            : busy ? 'Sending…' : 'Discuss this with my advisor'}
-        </button>
+        {adviceRequested ? (
+          <span className="option-requested-badge">✓ Advice requested</span>
+        ) : (
+          <button
+            className="button button-primary"
+            type="button"
+            disabled={busy || isPreferred}
+            onClick={() => onRequestAdvice(option)}
+          >
+            {busy ? 'Sending…' : 'Discuss this with my advisor'}
+          </button>
+        )}
       </div>
+      {adviceRequested ? (
+        <p className="option-request-note" role="status">
+          {preference
+            ? `Your advisor has your request. You said you are leaning towards ${maturityOptionLabels[preference]}${isPreferred ? ' (this option)' : ''}.`
+            : 'Your advisor has your request and will be in touch.'}
+        </p>
+      ) : null}
     </div>
   )
 }
@@ -2559,26 +2940,22 @@ function AdvisedOptionSummary({ option, advice, preference }) {
           <strong>{maturityOptionLabels[option] || option}</strong>
           <small>
             {advice?.advisedBy
-              ? `Recorded with you by ${advice.advisedBy}${advice.channel && advice.channel !== 'Not recorded' ? ` by ${advice.channel}` : ''}.`
-              : 'Recorded by your advisor.'}
+              ? `Agreed with ${advice.advisedBy === 'Broker' ? 'your broker' : advice.advisedBy}${advice.channel && advice.channel !== 'Not recorded' ? ` by ${advice.channel.toLowerCase()}` : ''}.`
+              : 'Agreed with your advisor.'}
           </small>
         </div>
       </div>
       {advice?.rationale ? (
-        <div className="advice-rationale">
-          <p className="eyebrow">WHY THIS OPTION</p>
+        <details className="advice-rationale">
+          <summary>Why this option</summary>
           <p>{advice.rationale}</p>
           {preference && preference !== option ? (
             <small>
               You were leaning towards {maturityOptionLabels[preference]} before your advice conversation.
             </small>
           ) : null}
-        </div>
+        </details>
       ) : null}
-      <p className="backend-disclaimer">
-        Demo only. A production journey would also capture a suitability assessment and your documented
-        authority to proceed before anything binding is recorded.
-      </p>
     </div>
   )
 }
@@ -2613,7 +2990,7 @@ function annualStatementTiming(policy) {
   return { maturityDate, statementDate, monthsBeforeMaturity }
 }
 
-function AnnualStatementPreview({ selectedCase, policy, onClose, onOpenPortal }) {
+function AnnualStatementPreview({ selectedCase, policy, onClose, onOpenPortal, onSeeOptions }) {
   const { maturityDate, statementDate, monthsBeforeMaturity } = annualStatementTiming(policy)
   const dateFormat = new Intl.DateTimeFormat('en-IE', { day: 'numeric', month: 'long', year: 'numeric' })
   const pot = mockPotValue(selectedCase.policy)
@@ -2624,45 +3001,56 @@ function AnnualStatementPreview({ selectedCase, policy, onClose, onOpenPortal })
   ]
 
   return (
-    <div className="modal-backdrop" role="presentation">
+    <div
+      className="modal-backdrop"
+      role="presentation"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose()
+      }}
+    >
       <section className="modal-card annual-statement-modal" role="dialog" aria-modal="true" aria-labelledby="annual-statement-title">
         <button className="modal-close" type="button" aria-label="Close email preview" onClick={onClose}>×</button>
-        <p className="eyebrow">DEMO ONLY · NOT SENT</p>
+        <p className="eyebrow">ANNUAL STATEMENT</p>
         <h2 id="annual-statement-title">Annual pension statement</h2>
         <div className="email-headers">
-          <p><span>To</span><strong>{policy.partnerId ? `Partner ${policy.partnerId}` : 'Demo recipient'} (demo recipient)</strong></p>
+          <p><span>To</span><strong>{selectedCase.customer}</strong></p>
           <p><span>Subject</span><strong>Your annual pension statement — {selectedCase.policy}</strong></p>
           <p>
             <span>Statement date</span>
-            <strong>{dateFormat.format(statementDate)} · T-{monthsBeforeMaturity} months</strong>
+            <strong>{dateFormat.format(statementDate)} · {monthsBeforeMaturity} months before maturity</strong>
           </p>
         </div>
         <div className="email-body">
-          <p>Dear Customer,</p>
+          <p>Dear {firstName(selectedCase.customer)},</p>
           <p>Your policy is approaching its planned maturity date of {dateFormat.format(maturityDate)}. Here is a snapshot to help you start thinking about your next steps.</p>
           <p className="statement-timing-note">
-            This statement falls on your policy anniversary, which is T-{monthsBeforeMaturity} months for this
-            contract. Because maturity is {dateFormat.format(maturityDate)}, the platform enriched this
-            statement with maturity information instead of sending a separate mailing.
+            As your policy matures in {monthsBeforeMaturity} months, this statement also shows what your pot
+            could be worth at maturity and the options available to you.
           </p>
           <div className="statement-value">
-            <span>Illustrative fund value at T-{monthsBeforeMaturity}</span>
+            <span>Your fund value today (illustrative)</span>
             <strong>{formatEuro(pot)}</strong>
-            <small>Synthetic demo amount only · not provided by your pension provider</small>
+            <small>Illustrative figure</small>
           </div>
           <strong>Illustrative value at planned maturity</strong>
           <div className="statement-projections">
             {maturityProjection.map(([label, value]) => <div key={label}><span>{label}</span><strong>{formatEuro(value)}</strong></div>)}
           </div>
-          <p>These scenarios use hypothetical annual growth rates for one year and do not include contributions, fees, tax or inflation. They are not a forecast, guarantee or financial advice.</p>
-          <p>When you are ready, visit the customer portal to review the available retirement options and follow your case.</p>
-          {onOpenPortal ? (
-            <button className="button button-primary" type="button" onClick={onOpenPortal}>Preview the customer portal</button>
-          ) : (
-            <button className="button button-primary" type="button" onClick={onClose}>Review my options</button>
-          )}
+          <p>Example growth rates before fees, tax and inflation. Not a forecast or a guarantee.</p>
+          <div className="statement-next-step">
+            <strong>What you can do now</strong>
+            <p>
+              Your options are ready to explore in your online portal: a guaranteed income, a lump sum,
+              or staying invested. When you want to talk them through, ask your advisor from there.
+            </p>
+            {onOpenPortal ? (
+              <button className="button button-primary" type="button" onClick={onOpenPortal}>Open the customer portal</button>
+            ) : (
+              <button className="button button-primary" type="button" onClick={onSeeOptions ?? onClose}>See my options →</button>
+            )}
+          </div>
         </div>
-        <p className="email-preview-note">This is a UI preview only. The backend does not send this annual statement or provide the mock valuation.</p>
+        {onOpenPortal ? <p className="email-preview-note">Shown as the customer receives it.</p> : null}
       </section>
     </div>
   )
@@ -2675,16 +3063,21 @@ function CustomerView({
   casesError,
   journeyState,
   focus,
+  demoActive,
+  optionReview,
+  onOptionReview: setOptionReview,
+  onOpenStatement,
+  onSeeOptionsInDemo,
   onClearFocus,
   onSelectCase,
   onRetryCases,
   onRetryJourney,
   onRequestAdvice,
   onSubmitDocument,
+  demoAccountHolder,
 }) {
-  const [selectedFileNames, setSelectedFileNames] = useState({})
-  const [optionReview, setOptionReview] = useState(null)
-  const [statementRequested, setStatementRequested] = useState(false)
+  // Hidden file inputs behind each Upload button.
+  const fileInputs = useRef({})
   const journey = journeyState.data
   const retirementCase = journey?.retirementCase
   const selectedOption = retirementCase?.maturityOption
@@ -2698,12 +3091,21 @@ function CustomerView({
   const policyState = usePolicyDetails(selectedCase?.policy)
   const statementReady = policyState.status === 'success' && Boolean(policyState.data?.maturityDate)
   const statementTiming = statementReady ? annualStatementTiming(policyState.data) : null
-  // The guided demo opens the customer journey on the annual statement.
-  const statementOpen = statementReady && (statementRequested || focus === 'annual-statement')
+  // The statement is opened by focus, so moving to another demo step closes it.
+  const statementOpen = statementReady && focus === 'annual-statement'
 
-  const closeStatement = () => {
-    setStatementRequested(false)
-    onClearFocus?.()
+  const closeStatement = () => onClearFocus?.()
+
+  const seeOptions = () => {
+    if (onSeeOptionsInDemo) {
+      onSeeOptionsInDemo()
+      return
+    }
+    closeStatement()
+    setOptionReview(null)
+    window.requestAnimationFrame(() => {
+      document.getElementById('your-options')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
   }
 
   return (
@@ -2712,19 +3114,19 @@ function CustomerView({
         <Brand subline="Retirement Hub" />
         <div className="customer-header-right">
           <span>Help and support</span>
-          <span className="avatar">D</span>
+          <span className="avatar">{initials(selectedCase?.customer)}</span>
         </div>
       </header>
       <main className="customer-main">
         <div className="customer-welcome">
-          <p className="eyebrow">YOUR RETIREMENT JOURNEY · LIVE API</p>
-          <h1>Your retirement case</h1>
-          <p className="muted-copy">Journey information and choices are read from and submitted to the Java case service.</p>
+          <p className="eyebrow">YOUR RETIREMENT JOURNEY</p>
+          <h1>{selectedCase ? `Welcome back, ${firstName(selectedCase.customer)}` : 'Your retirement'}</h1>
+          <p className="muted-copy">Your pension is approaching maturity. Here is where things stand and what happens next.</p>
         </div>
         {casesLoading ? (
           <section className="panel connection-state" role="status">
             <div className="loading-indicator" aria-hidden="true" />
-            <strong>Loading cases from the backend…</strong>
+            <strong>Loading your details…</strong>
           </section>
         ) : casesError ? (
           <section className="panel connection-state connection-error" role="alert">
@@ -2733,15 +3135,14 @@ function CustomerView({
           </section>
         ) : cases.length === 0 ? (
           <section className="panel connection-state">
-            <EmptyState title="No cases available" detail="Create a case through the live maturity workflow before opening the customer view." />
+            <EmptyState title="No cases yet" detail="Add a maturing policy from the case worker view first." />
           </section>
         ) : selectedCase ? (
           <>
-            <section className="panel live-case-selector">
-              <label htmlFor="customer-case">Demo case</label>
+            <section className="panel live-case-selector" hidden={demoActive}>
+              <label htmlFor="customer-case">Viewing as</label>
               <div className="customer-case-select-row">
                 <select id="customer-case" value={selectedCase.id} onChange={(event) => {
-                  setSelectedFileNames({})
                   setOptionReview(null)
                   onSelectCase(event.target.value)
                 }}>
@@ -2755,10 +3156,9 @@ function CustomerView({
                   disabled={journeyState.status === 'loading' || journeyState.actionBusy}
                   onClick={onRetryJourney}
                 >
-                  Refresh journey
+                  Refresh
                 </button>
               </div>
-              <p>Authentication and customer-to-case access control are not implemented; choose a case for this demonstration.</p>
             </section>
             {journeyState.status === 'loading' ? (
               <section className="panel connection-state" role="status">
@@ -2773,22 +3173,21 @@ function CustomerView({
               <>
                 <section className="panel annual-statement-cta">
                   <div className="annual-statement-cta-copy">
-                    <p className="eyebrow">
-                      {statementTiming
-                        ? `T-${statementTiming.monthsBeforeMaturity} MONTHS · ANNUAL STATEMENT`
-                        : 'ANNUAL STATEMENT'}
-                    </p>
+                    <p className="eyebrow">ANNUAL STATEMENT</p>
                     <h2>Your yearly pension statement</h2>
                     <p className="muted-copy">
-                      Sent on your policy anniversary. Because maturity is coming up, it includes your
-                      illustrative value and what it could be worth at your planned maturity date.
+                      {statementTiming
+                        ? `Sent on your policy anniversary, ${statementTiming.monthsBeforeMaturity} months before maturity. `
+                        : 'Sent on your policy anniversary. '}
+                      Because maturity is coming up, it also shows what your pot could be worth and what
+                      your options are.
                     </p>
                   </div>
                   <button
                     className="button button-secondary"
                     type="button"
                     disabled={!statementReady}
-                    onClick={() => setStatementRequested(true)}
+                    onClick={onOpenStatement}
                   >
                     {policyState.status === 'loading' ? 'Loading statement…' : 'Open annual statement'}
                   </button>
@@ -2808,22 +3207,18 @@ function CustomerView({
                 <section className="customer-card panel live-customer-card">
                   <header className="customer-card-heading">
                     <div>
-                      <p className="eyebrow">CASE {retirementCase.caseId}</p>
-                      <h2>{retirementCase.caseName || selectedCase.customer}</h2>
-                      <p className="muted-copy">Policy {retirementCase.policyId || selectedCase.policy} · Status: {caseStatus}</p>
+                      <p className="eyebrow">POLICY {retirementCase.policyId || selectedCase.policy}</p>
+                      <h2>Your next steps</h2>
                     </div>
-                    <StatusPill tone={statusTone(caseStatus || '')}>{caseStatus}</StatusPill>
+                    <StatusPill tone={statusTone(caseStatus || '')}>{customerStatus(caseStatus)}</StatusPill>
                   </header>
-                  {journey.message ? <p className="journey-message">{journey.message}</p> : null}
-                  {caseStatus === 'MATURITY_PACKAGE_SENT' ? (
-                    <p className="backend-disclaimer">
-                      Backend stage only: the service generates an email body and recipient but does not deliver an email.
-                    </p>
+                  {journey.message && !['MATURITY_PACKAGE_SENT', 'AWAITING_INFORMATION'].includes(caseStatus) ? (
+                    <p className="journey-message">{journey.message.replace(/[[\]]/g, '')}</p>
                   ) : null}
                   {journeyState.actionError ? <p className="workflow-message workflow-error" role="alert">{journeyState.actionError}</p> : null}
 
-                  <section className="live-journey-section">
-                    <p className="eyebrow">YOUR MATURITY OPTION</p>
+                  <section className="live-journey-section" id="your-options">
+                    <p className="eyebrow">YOUR MATURITY OPTIONS</p>
                     <h3>
                       {optionReview
                         ? 'Take a closer look'
@@ -2832,8 +3227,11 @@ function CustomerView({
                     {optionReview ? (
                       <OptionReview
                         option={optionReview}
+                        options={journey.availableOptions}
+                        onSelectOption={setOptionReview}
                         pot={potValue}
                         preference={customerPreference}
+                        status={caseStatus}
                         busy={journeyState.actionBusy}
                         onBack={() => setOptionReview(null)}
                         onRequestAdvice={(option) => {
@@ -2850,8 +3248,8 @@ function CustomerView({
                     ) : journey.availableOptions.length ? (
                       <>
                         <p className="muted-copy">
-                          Compare the options and their sample figures. Your advisor talks these through with
-                          you and records your option with you — nothing is selected from this screen.
+                          Here is how each option works, with example figures. Nothing is chosen on this
+                          screen: your advisor talks the options through with you.
                         </p>
                         <div className="option-list">
                           {journey.availableOptions.map((option) => (
@@ -2866,7 +3264,7 @@ function CustomerView({
                               <span className="option-copy">
                                 <strong>{maturityOptionLabels[option] || option}</strong>
                                 <span>{optionInformation[option].heading}</span>
-                                <small>See sample figures and trade-offs →</small>
+                                <small>See example figures →</small>
                               </span>
                             </button>
                           ))}
@@ -2882,7 +3280,7 @@ function CustomerView({
                     ) : <p className="muted-copy">No further maturity options are available for this case.</p>}
                   </section>
 
-                  {selectedOption && !optionReview ? <section className="live-journey-section">
+                  {selectedOption && !optionReview ? <section className="live-journey-section" id="your-documents">
                     <p className="eyebrow">REQUIRED DOCUMENTS</p>
                     <h3>Documents for this journey</h3>
                     {requiredDocuments.length ? (
@@ -2901,24 +3299,30 @@ function CustomerView({
                               </div>
                               {outstanding && !uploaded && selectedOption ? (
                                 <div className="live-document-submit">
-                                  <label>
-                                    Choose file name
-                                    <input
-                                      type="file"
-                                      accept=".pdf,.png,.jpg,.jpeg"
-                                      onChange={(event) => setSelectedFileNames((current) => ({
-                                        ...current,
-                                        [document]: event.target.files?.[0]?.name || '',
-                                      }))}
-                                    />
-                                  </label>
+                                  <input
+                                    hidden
+                                    type="file"
+                                    accept=".pdf,.png,.jpg,.jpeg"
+                                    ref={(element) => { fileInputs.current[document] = element }}
+                                    onChange={(event) => {
+                                      const name = event.target.files?.[0]?.name
+                                      if (name) onSubmitDocument(document, name)
+                                    }}
+                                  />
                                   <button
-                                    className="button button-secondary"
+                                    className="button button-primary document-upload-button"
                                     type="button"
-                                    disabled={journeyState.actionBusy || !selectedFileNames[document]}
-                                    onClick={() => onSubmitDocument(document, selectedFileNames[document])}
+                                    disabled={journeyState.actionBusy}
+                                    onClick={() => (demoActive
+                                      // The guided demo skips the file dialog.
+                                      ? onSubmitDocument(
+                                        document,
+                                        `${document.toLowerCase()}.pdf`,
+                                        document === 'BANK_DETAILS' ? demoAccountHolder : null,
+                                      )
+                                      : fileInputs.current[document]?.click())}
                                   >
-                                    {journeyState.actionBusy ? 'Recording…' : 'Record document'}
+                                    {journeyState.actionBusy ? 'Uploading…' : `Upload ${label.toLowerCase()}`}
                                   </button>
                                 </div>
                               ) : outstanding && !uploaded ? (
@@ -2929,16 +3333,13 @@ function CustomerView({
                         })}
                       </div>
                     ) : (
-                      <p className="muted-copy">The backend has not returned document requirements yet. Choose a maturity option first if available.</p>
+                      <p className="muted-copy">Your documents will appear here once your advisor has recorded your option.</p>
                     )}
-                    <p className="backend-disclaimer">
-                      Important: this demo sends the document type and selected filename only. The backend records the type and ignores the filename; file contents are never uploaded, transferred, stored, or reviewed.
-                    </p>
                   </section> : null}
                   {caseStatus === 'COMPLETED' ? (
                     <div className="customer-complete-message" role="status">
-                      <strong>Backend journey marked complete</strong>
-                      <p>All required document types have been recorded by the service.</p>
+                      <strong>You are all set</strong>
+                      <p>We have everything we need. Your money will be ready on your maturity date.</p>
                     </div>
                   ) : null}
                 </section>
@@ -2947,7 +3348,7 @@ function CustomerView({
           </>
         ) : null}
         <p className="customer-privacy">
-          <strong>Demo notice:</strong> This screen is connected to the demo backend and is not an authenticated customer portal. The backend uses in-memory data and does not process actual uploaded files or deliver email.
+          Figures shown are illustrative and are not financial advice.
         </p>
       </main>
       {statementOpen && selectedCase && policyState.data ? (
@@ -2955,6 +3356,7 @@ function CustomerView({
           selectedCase={selectedCase}
           policy={policyState.data}
           onClose={closeStatement}
+          onSeeOptions={seeOptions}
         />
       ) : null}
       <footer className="customer-footer">
@@ -2980,19 +3382,19 @@ function caseSignal(status) {
 
 function caseNextAction(status) {
   const nextActions = {
-    NEW: 'Start the case assessment.',
-    MATURITY_DETECTED: 'Confirm ownership and begin the maturity review.',
-    CLE_OWNER_DETECTED: 'Review the maturity package status. The demo does not send email.',
-    NON_CLE_OWNER_DETECTED: 'Review the non-CLE routing details.',
-    MATURITY_PACKAGE_SENT: 'Customer is reviewing their options before advice.',
+    NEW: 'The platform is checking the maturity date.',
+    MATURITY_DETECTED: 'The platform is working out who advises this customer.',
+    CLE_OWNER_DETECTED: 'Lead is with In-House Sales. Waiting for the customer to ask for advice.',
+    NON_CLE_OWNER_DETECTED: 'Lead is with the broker. Waiting for the customer to ask for advice.',
     ADVICE_REQUESTED: 'Accept the lead and book the advice conversation.',
     APPOINTMENT_BOOKED: 'Give the advice and record the option with the client.',
-    AWAITING_INFORMATION: 'Review the information still needed from the customer.',
-    AWAITING_CUSTOMER: 'Follow up on the customer’s next step.',
-    IN_PROGRESS: 'Continue the case workflow.',
-    ON_HOLD: 'Review the hold reason and decide the next action.',
-    CANCELLED: 'Review the cancellation details.',
-    COMPLETED: 'No action required — the journey is complete.',
+    IN_PROGRESS: 'Advice recorded. The formal maturity pack goes out automatically.',
+    MATURITY_PACKAGE_SENT: 'Formal pack issued. Waiting for the customer’s documents.',
+    AWAITING_INFORMATION: 'One targeted request sent for the missing document.',
+    AWAITING_CUSTOMER: 'Waiting on the customer.',
+    ON_HOLD: 'Automation stopped. A case worker needs to resolve this.',
+    CANCELLED: 'Case cancelled. Nothing more to do.',
+    COMPLETED: 'Nothing to do. Ready to pay out at maturity.',
   }
   return nextActions[String(status || '').toUpperCase()] || 'Open the case to review its current status.'
 }
@@ -3013,15 +3415,14 @@ function CaseStatusSummary({ status }) {
   const heading = signal === 'red'
     ? 'Needs attention'
     : signal === 'amber'
-      ? 'Waiting on a next step'
+      ? 'Waiting on the customer or advisor'
       : signal === 'green'
-        ? 'Journey completed'
-        : 'Active operational stage'
+        ? 'Journey complete'
+        : 'Moving automatically'
   return (
     <section className={`case-status-summary summary-${signal}`}>
       <span className="signal-dot" aria-hidden="true" />
       <div><strong>{heading}</strong><p>{caseNextAction(status)}</p></div>
-      <StatusPill tone={signal}>{status}</StatusPill>
     </section>
   )
 }
@@ -3034,6 +3435,76 @@ function statusTone(status) {
   if (normalized.includes('ready') || normalized.includes('received') || normalized.includes('completed')) return 'green'
   if (normalized.includes('customer') || normalized.includes('signature') || normalized.includes('hold')) return 'amber'
   return 'neutral'
+}
+
+/** Which swimlane an audit entry belongs in, from who performed it. */
+function timelineLane(event) {
+  if (event.automated) return 'platform'
+  const actor = String(event.actor || '')
+  if (actor === 'Customer') return 'customer'
+  if (/broker|in-house/i.test(actor)) return 'advisor'
+  return 'operations'
+}
+
+const timelineLanes = [
+  ['platform', 'Platform', 'Automated'],
+  ['customer', 'Customer', 'Self-service'],
+  ['advisor', 'Advisor', 'Broker or In-House Sales'],
+  ['operations', 'CLE Operations', 'Manual admin'],
+]
+
+/**
+ * One case from start to finish, laid out by who did each step. The
+ * operations row is the measure: the fewer entries, the less manual effort.
+ */
+function JourneyTimeline({ selectedCase }) {
+  const events = [...selectedCase.journeyEvents].sort((a, b) => new Date(a.at) - new Date(b.at))
+  const counts = Object.fromEntries(timelineLanes.map(([key]) => [key, 0]))
+  events.forEach((event) => { counts[timelineLane(event)] += 1 })
+
+  return (
+    <div className="journey-timeline-page">
+      <header className="page-heading">
+        <div>
+          <p className="eyebrow">CASE TIMELINE</p>
+          <h1>{selectedCase.customer}</h1>
+          <p className="muted-copy">{selectedCase.policy} · every action on this case, by who performed it</p>
+        </div>
+        <StatusPill tone={caseSignal(selectedCase.backendStatus)}>{selectedCase.status}</StatusPill>
+      </header>
+      <section className="panel journey-timeline">
+        {timelineLanes.map(([key, label, detail]) => {
+          const laneEvents = events
+            .map((event, index) => ({ event, order: index + 1 }))
+            .filter(({ event }) => timelineLane(event) === key)
+          return (
+            <div className={`timeline-row timeline-row-${key}`} key={key}>
+              <div className="timeline-lane-label">
+                <strong>{label}</strong>
+                <small>{detail}</small>
+                <span className="timeline-lane-count">{laneEvents.length}</span>
+              </div>
+              <div className="timeline-lane-events">
+                {laneEvents.length ? laneEvents.map(({ event, order }) => (
+                  <div className={`timeline-event timeline-event-${key}`} key={order} title={event.detail}>
+                    <span className="timeline-event-order">{order}</span>
+                    <strong>{auditActionLabels[event.action] || event.action}</strong>
+                    <small>{formatEventDate(event.at)}</small>
+                  </div>
+                )) : <p className="timeline-lane-empty">No manual activity</p>}
+              </div>
+            </div>
+          )
+        })}
+      </section>
+      <div className="metric-grid timeline-summary">
+        <Metric label="Done by the platform" value={counts.platform} tone="green" />
+        <Metric label="Customer self-service" value={counts.customer} />
+        <Metric label="Advice from the advisor" value={counts.advisor} />
+        <Metric label="Manual admin by CLE Operations" value={counts.operations} tone={counts.operations ? 'red' : 'green'} />
+      </div>
+    </div>
+  )
 }
 
 export default App

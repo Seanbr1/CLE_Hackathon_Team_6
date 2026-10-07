@@ -155,10 +155,14 @@ export function issueMaturityPackages() {
   })
 }
 
-export function recordJourneyDocument(caseId, document, fileName) {
+/**
+ * Records a customer document. `accountHolder` is the name read from bank
+ * details; a mismatch with the policyholder holds the case for review.
+ */
+export function recordJourneyDocument(caseId, document, fileName, accountHolder = null) {
   return request(`/cases/${encodeURIComponent(caseId)}/journey/documents`, {
     method: 'POST',
-    body: { document, fileName },
+    body: { document, fileName, accountHolder },
   }).then((result) => {
     if (!result || typeof result !== 'object' || !result.retirementCase) {
       throw new Error('Document service returned an invalid journey.')
@@ -180,6 +184,19 @@ export function resetDemoData() {
   return request('/demo/reset', { method: 'POST' }).then((result) => {
     if (!Array.isArray(result)) {
       throw new Error('Demo reset returned an invalid response.')
+    }
+    return result
+  })
+}
+
+/** A case worker clears a validation exception after reviewing it. */
+export function resolveCaseException(caseId, note) {
+  return request(`/cases/${encodeURIComponent(caseId)}/journey/exception/resolve`, {
+    method: 'POST',
+    body: { note, actor: 'Case worker' },
+  }).then((result) => {
+    if (!result || typeof result !== 'object' || !result.retirementCase) {
+      throw new Error('Exception service returned an invalid journey.')
     }
     return result
   })

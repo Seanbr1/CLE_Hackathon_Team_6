@@ -113,4 +113,58 @@ class CaseJourneyServiceTest {
                 .isInstanceOf(InvalidCaseRequestException.class)
                 .hasMessageContaining("document is required");
     }
+
+    @Test
+    void bankDetailsInAnotherNameHoldTheCaseForCaseWorkerReview() {
+        Case created = givenSentCase("POL-20");
+        givenAdvisedCase(created.getCaseId(), MaturityOption.ANNUITY);
+
+        journeyService.uploadDocument(created.getCaseId(), RequiredDocument.PASSPORT);
+        CaseJourneyResponse held = journeyService.uploadDocument(
+                created.getCaseId(), RequiredDocument.BANK_DETAILS, "Someone Else");
+
+        assertThat(held.retirementCase().getCaseStatus()).isEqualTo(CaseStatus.ON_HOLD);
+        assertThat(held.retirementCase().getExceptionReason()).contains("Someone Else");
+        assertThat(held.retirementCase().getProcessingLane()).hasToString("RED");
+    }
+
+    @Test
+    void matchingAccountHolderCompletesStraightThrough() {
+        Case created = givenSentCase("POL-21");
+        givenAdvisedCase(created.getCaseId(), MaturityOption.ANNUITY);
+
+        journeyService.uploadDocument(created.getCaseId(), RequiredDocument.PASSPORT);
+        CaseJourneyResponse done = journeyService.uploadDocument(
+                created.getCaseId(), RequiredDocument.BANK_DETAILS, created.getCaseName());
+
+        assertThat(done.retirementCase().getCaseStatus()).isEqualTo(CaseStatus.COMPLETED);
+    }
+
+    @Test
+    void resolvingTheExceptionCompletesTheCaseAndRecordsTheReview() {
+        Case created = givenSentCase("POL-22");
+        givenAdvisedCase(created.getCaseId(), MaturityOption.ANNUITY);
+        journeyService.uploadDocument(created.getCaseId(), RequiredDocument.PASSPORT);
+        journeyService.uploadDocument(created.getCaseId(), RequiredDocument.BANK_DETAILS, "Someone Else");
+
+        CaseJourneyResponse resolved = journeyService.resolveException(
+                created.getCaseId(), "Name change verified.", null);
+
+        assertThat(resolved.retirementCase().getCaseStatus()).isEqualTo(CaseStatus.COMPLETED);
+        assertThat(resolved.retirementCase().getExceptionReason()).isNull();
+        assertThat(resolved.retirementCase().getJourneyEvents())
+                .anySatisfy(event -> {
+                    assertThat(event.getAction()).isEqualTo("EXCEPTION_RESOLVED");
+                    assertThat(event.getActor()).isEqualTo("Case worker");
+                    assertThat(event.isAutomated()).isFalse();
+                });
+    }
+
+    @Test
+    void resolvingWithoutAnOpenExceptionIsRejected() {
+        Case created = givenSentCase("POL-23");
+
+        assertThatThrownBy(() -> journeyService.resolveException(created.getCaseId(), null, null))
+                .isInstanceOf(InvalidCaseRequestException.class);
+    }
 }

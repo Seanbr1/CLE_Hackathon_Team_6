@@ -2,6 +2,7 @@ package com.example.demo.retirement.api;
 
 import com.example.demo.retirement.api.dto.CaseJourneyResponse;
 import com.example.demo.retirement.api.dto.DocumentUploadRequest;
+import com.example.demo.retirement.api.dto.ExceptionResolutionRequest;
 import com.example.demo.retirement.service.CaseJourneyService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -32,10 +33,26 @@ public class CaseJourneyController {
         return caseJourneyService.getJourney(caseId);
     }
 
-    /** Upload a document - accepted immediately and completes the case. */
+    /**
+     * Upload a document. A complete, consistent response completes the case; a
+     * conflicting one is held for CLE Operations.
+     */
     @PostMapping("/documents")
     public CaseJourneyResponse uploadDocument(@PathVariable String caseId,
                                               @RequestBody DocumentUploadRequest request) {
-        return caseJourneyService.uploadDocument(caseId, request == null ? null : request.document());
+        return caseJourneyService.uploadDocument(
+                caseId,
+                request == null ? null : request.document(),
+                request == null ? null : request.accountHolder());
+    }
+
+    /** A case worker clears a validation exception after reviewing it. */
+    @PostMapping("/exception/resolve")
+    public CaseJourneyResponse resolveException(@PathVariable String caseId,
+                                                @RequestBody(required = false) ExceptionResolutionRequest request) {
+        return caseJourneyService.resolveException(
+                caseId,
+                request == null ? null : request.note(),
+                request == null ? null : request.actor());
     }
 }
