@@ -17,6 +17,10 @@ retirement-hub-ui/.env
 retirement-hub-ui/.env.*
 !retirement-hub-ui/.env.example
 
+# Local Spring profiles - may hold the OpenAI API key
+demo/src/main/resources/application-local.properties
+demo/src/test/resources/application-local.properties
+
 # Logs and operating-system/editor files
 *.log
 Thumbs.db

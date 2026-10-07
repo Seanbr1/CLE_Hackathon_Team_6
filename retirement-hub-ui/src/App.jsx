@@ -17,6 +17,7 @@ import {
   resolveCaseException,
   updateCase as updateBackendCase,
 } from './api/caseApi'
+import { generateRetirementPlanFromQuery } from './api/retirementPlanApi'
 import './App.css'
 
 const maturityOptionLabels = {
@@ -2731,6 +2732,234 @@ function formatEuro(amount) {
   }).format(amount)
 }
 
+const DEFAULT_ADVICE_QUERY = 'I want a pension of EUR 3000 per month having a pension pot of EUR 500000 '
+  + 'with 1 year left for existing pension fund to mature. '
+  + 'Help me plan my retirement journey by selecting mix-match options.'
+
+const sustainabilityTone = {
+  SUSTAINABLE: 'green',
+  MOSTLY_SUSTAINABLE: 'amber',
+  AT_RISK: 'red',
+}
+
+const sustainabilityLabel = {
+  SUSTAINABLE: 'Sustainable',
+  MOSTLY_SUSTAINABLE: 'Mostly sustainable',
+  AT_RISK: 'At risk',
+  UNKNOWN: 'Not determined',
+}
+
+/** Formats a plan amount in the plan's own currency, tolerating string decimals. */
+function formatPlanMoney(amount, currency = 'EUR') {
+  const numeric = typeof amount === 'number' ? amount : Number.parseFloat(amount)
+  if (!Number.isFinite(numeric)) return '—'
+  try {
+    return new Intl.NumberFormat('en-IE', {
+      style: 'currency',
+      currency,
+      maximumFractionDigits: 0,
+    }).format(numeric)
+  } catch {
+    return `${currency} ${Math.round(numeric).toLocaleString('en-IE')}`
+  }
+}
+
+/** Splits the mix-match label "REINVEST - reason" into its two parts. */
+function splitMixMatch(label) {
+  if (typeof label !== 'string') return { strategy: '', reason: '' }
+  const separator = label.indexOf(' - ')
+  if (separator === -1) return { strategy: label, reason: '' }
+  return {
+    strategy: label.slice(0, separator).trim(),
+    reason: label.slice(separator + 3).trim(),
+  }
+}
+
+/**
+ * Free-text AI guidance panel shown alongside the maturity options.
+ *
+ * Sends the customer's question to the retirement planning API and renders the
+ * returned plan: headline figures, the narrative insights and a year-by-year
+ * drawdown projection.
+ */
+function AiAdviceSection({ onUseOption, busy }) {
+  const [query, setQuery] = useState(DEFAULT_ADVICE_QUERY)
+  const [plan, setPlan] = useState(null)
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [showAllYears, setShowAllYears] = useState(false)
+
+  async function onAsk(event) {
+    event.preventDefault()
+    setLoading(true)
+    setError('')
+    setShowAllYears(false)
+    try {
+      const result = await generateRetirementPlanFromQuery(query)
+      setPlan(result)
+    } catch (requestError) {
+      setPlan(null)
+      setError(requestError.message || 'Could not generate guidance. Please try again.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  function onReset() {
+    setPlan(null)
+    setError('')
+    setShowAllYears(false)
+    setQuery(DEFAULT_ADVICE_QUERY)
+  }
+
+  const currency = plan?.currency || 'EUR'
+  const years = plan?.yearlyPlans ?? []
+  const visibleYears = showAllYears ? years : years.slice(0, 10)
+  const recommended = plan?.recommendedMaturityOption
+  const canApply = recommended && maturityOptionLabels[recommended]
+
+  return (
+    <section className="live-journey-section ai-advice" aria-labelledby="ai-advice-heading">
+      <p className="eyebrow">AI RETIREMENT GUIDANCE</p>
+      <h3 id="ai-advice-heading">Ask for a mix-match plan</h3>
+      <p className="muted-copy">
+        Describe what you want in your own words — include a monthly amount and your pension pot.
+        We will model a year-by-year drawdown and suggest how to blend the options.
+      </p>
+
+      <form className="ai-advice-form" onSubmit={onAsk}>
+        <label htmlFor="ai-advice-query">Your question</label>
+        <textarea
+          id="ai-advice-query"
+          rows={4}
+          value={query}
+          disabled={loading}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="e.g. I want EUR 3000 per month from a pension pot of EUR 500000 with 1 year to maturity."
+        />
+        <div className="ai-advice-actions">
+          <button className="button button-primary" type="submit" disabled={loading || !query.trim()}>
+            {loading ? 'Generating guidance…' : 'Get AI guidance'}
+          </button>
+          {plan || error ? (
+            <button className="text-button" type="button" onClick={onReset} disabled={loading}>
+              Start again
+            </button>
+          ) : null}
+        </div>
+      </form>
+
+      <p className="backend-disclaimer">
+        Guidance only. These are modelled projections, not a quote, guarantee or financial advice.
+      </p>
+
+      {loading ? <p className="ai-advice-loading" role="status">Modelling your retirement journey…</p> : null}
+      {error ? <p className="workflow-message workflow-error" role="alert">{error}</p> : null}
+
+      {plan && !loading ? (
+        <div className="ai-advice-result">
+          <div className="ai-advice-headline">
+            <StatusPill tone={sustainabilityTone[plan.sustainabilityStatus] || 'neutral'}>
+              {sustainabilityLabel[plan.sustainabilityStatus] || plan.sustainabilityStatus}
+            </StatusPill>
+            <StatusPill tone="neutral">
+              {plan.insightSource === 'AI' ? 'AI generated' : 'Rule-based model'}
+            </StatusPill>
+          </div>
+
+          <dl className="ai-advice-metrics">
+            <div>
+              <dt>Monthly income requested</dt>
+              <dd>{formatPlanMoney(plan.desiredMonthlyPension, currency)}</dd>
+            </div>
+            <div>
+              <dt>Pension pot</dt>
+              <dd>{formatPlanMoney(plan.pensionPot, currency)}</dd>
+            </div>
+            <div>
+              <dt>Income lasts</dt>
+              <dd>{years.length} of {plan.totalRetirementYears} years</dd>
+            </div>
+            <div>
+              <dt>Suggested option</dt>
+              <dd>{maturityOptionLabels[recommended] || recommended || '—'}</dd>
+            </div>
+          </dl>
+
+          {plan.executiveSummary ? (
+            <p className="ai-advice-summary">{plan.executiveSummary}</p>
+          ) : null}
+
+          {canApply ? (
+            <button
+              className="button button-secondary"
+              type="button"
+              disabled={busy}
+              onClick={() => onUseOption(recommended)}
+            >
+              Review “{maturityOptionLabels[recommended]}”
+            </button>
+          ) : null}
+
+          {plan.aiGeneratedInsights ? (
+            <details className="ai-advice-details" open>
+              <summary>Full analysis</summary>
+              <pre className="ai-advice-insights">{plan.aiGeneratedInsights}</pre>
+            </details>
+          ) : null}
+
+          {years.length ? (
+            <details className="ai-advice-details">
+              <summary>Year-by-year projection</summary>
+              <div className="ai-advice-table-scroll">
+                <table className="ai-advice-table">
+                  <caption className="visually-hidden">
+                    Projected pension pot balance, withdrawals and growth for each year of retirement
+                  </caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Year</th>
+                      <th scope="col">Opening</th>
+                      <th scope="col">Withdrawal</th>
+                      <th scope="col">Growth</th>
+                      <th scope="col">Closing</th>
+                      <th scope="col">Strategy</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleYears.map((yearPlan) => {
+                      const { strategy, reason } = splitMixMatch(yearPlan.mixMatchOption)
+                      return (
+                        <tr key={yearPlan.year} className={yearPlan.isSustainable ? undefined : 'ai-advice-row-risk'}>
+                          <th scope="row">{yearPlan.year}</th>
+                          <td>{formatPlanMoney(yearPlan.beginningBalance, currency)}</td>
+                          <td>{formatPlanMoney(yearPlan.annualPensionWithdrawal, currency)}</td>
+                          <td>{formatPlanMoney(yearPlan.investmentGain, currency)}</td>
+                          <td>{formatPlanMoney(yearPlan.endingBalance, currency)}</td>
+                          <td>
+                            <strong>{strategy}</strong>
+                            {reason ? <small>{reason}</small> : null}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              {years.length > 10 ? (
+                <button className="text-button" type="button" onClick={() => setShowAllYears((shown) => !shown)}>
+                  {showAllYears ? 'Show first 10 years' : `Show all ${years.length} years`}
+                </button>
+              ) : null}
+            </details>
+          ) : null}
+        </div>
+      ) : null}
+    </section>
+  )
+}
+
+
 function mockPotValue(policyId) {
   if (mockPotValues[policyId]) return mockPotValues[policyId]
   const hash = Array.from(policyId || 'demo').reduce(
@@ -3280,7 +3509,14 @@ function CustomerView({
                     ) : <p className="muted-copy">No further maturity options are available for this case.</p>}
                   </section>
 
-                  {selectedOption && !optionReview ? <section className="live-journey-section" id="your-documents">
+                  {caseStatus !== 'COMPLETED' ? (
+                    <AiAdviceSection
+                      busy={journeyState.actionBusy}
+                      onUseOption={(option) => setOptionReview(option)}
+                    />
+                  ) : null}
+
+                  {selectedOption && !optionReview ? <section className="live-journey-section">
                     <p className="eyebrow">REQUIRED DOCUMENTS</p>
                     <h3>Documents for this journey</h3>
                     {requiredDocuments.length ? (

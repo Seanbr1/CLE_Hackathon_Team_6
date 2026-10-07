@@ -4151,6 +4151,234 @@
   }
 }
 
+/* --- AI retirement guidance panel ------------------------------------- */
+
+.ai-advice {
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--secondary);
+  border-radius: 10px;
+  background: #fbfcfa;
+  padding: 18px;
+}
+
+.ai-advice-form {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 6px;
+}
+
+.ai-advice-form label {
+  color: #47515a;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.ai-advice-form textarea {
+  width: 100%;
+  padding: 10px 11px;
+  border: 1px solid #d3dcda;
+  border-radius: 6px;
+  background: #fff;
+  color: #293a4d;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.55;
+  resize: vertical;
+}
+
+.ai-advice-form textarea:focus {
+  border-color: var(--secondary);
+  outline: 2px solid var(--badge-01);
+  outline-offset: 1px;
+}
+
+.ai-advice-form textarea:disabled {
+  background: var(--superlight-grey);
+  cursor: not-allowed;
+}
+
+.ai-advice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 13px;
+  margin-top: 3px;
+}
+
+.ai-advice-loading {
+  margin: 0;
+  color: var(--secondary);
+  font-size: 11px;
+}
+
+.ai-advice-result {
+  display: grid;
+  gap: 12px;
+  margin-top: 15px;
+  padding-top: 15px;
+  border-top: 1px solid #edf0ef;
+}
+
+.ai-advice-headline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.ai-advice-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 9px;
+  margin: 0;
+}
+
+.ai-advice-metrics > div {
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.ai-advice-metrics dt {
+  margin: 0 0 3px;
+  color: #77828c;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+}
+
+.ai-advice-metrics dd {
+  margin: 0;
+  color: var(--navy);
+  font-size: 15px;
+  font-weight: 750;
+  line-height: 1.25;
+}
+
+.ai-advice-summary {
+  margin: 0;
+  padding: 11px 13px;
+  border-left: 3px solid var(--secondary);
+  border-radius: 0 6px 6px 0;
+  background: #f3f8f6;
+  color: #35465a;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.ai-advice-result > .button {
+  justify-self: start;
+}
+
+.ai-advice-details {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 9px 13px;
+}
+
+.ai-advice-details > summary {
+  padding: 3px 0;
+  color: var(--secondary);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.ai-advice-insights {
+  max-height: 320px;
+  margin: 9px 0 0;
+  padding: 11px 12px;
+  overflow-y: auto;
+  border-radius: 6px;
+  background: var(--superlight-grey);
+  color: #40505e;
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ai-advice-table-scroll {
+  margin-top: 9px;
+  overflow-x: auto;
+}
+
+.ai-advice-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.ai-advice-table th,
+.ai-advice-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #edf0ef;
+  font-size: 10px;
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+.ai-advice-table thead th {
+  color: #65717c;
+  background: #f4f5f3;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+}
+
+.ai-advice-table tbody th {
+  color: #1d2b42;
+  font-weight: 750;
+}
+
+.ai-advice-table td strong {
+  display: block;
+  color: #2a394d;
+  font-size: 10px;
+}
+
+.ai-advice-table td small {
+  display: block;
+  max-width: 230px;
+  margin-top: 2px;
+  color: #77828c;
+  font-size: 9px;
+  line-height: 1.4;
+  white-space: normal;
+}
+
+.ai-advice-row-risk {
+  background: var(--error-light);
+}
+
+.ai-advice-row-risk th,
+.ai-advice-row-risk td {
+  color: #8f102d;
+}
+
+.ai-advice-details > .text-button {
+  margin-top: 9px;
+}
+
+@media (max-width: 720px) {
+  .ai-advice {
+    padding: 14px;
+  }
+
+  .ai-advice-metrics {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .ai-advice-metrics dd {
+    font-size: 13px;
+  }
+}
+
 /* Customer: the broker's rationale, one click away. */
 details.advice-rationale > summary {
   color: var(--secondary);

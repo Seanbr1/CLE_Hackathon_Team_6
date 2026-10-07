@@ -62,3 +62,63 @@ once an advisor has recorded advice.
   file contents.
 - The backend creates email content but does not send email.
 - The demo is not financial advice and does not submit a binding instruction.
+
+## New: AI-Powered Retirement Planning API
+
+A comprehensive REST API for generating personalized retirement plans with year-by-year projections and AI recommendations.
+
+### Quick Example
+
+```bash
+# Natural language query
+curl -X POST "http://localhost:8080/api/v1/retirement-plans/from-query?query=I%20want%20EUR%203000%20per%20month%20from%20500000%20pot%20with%201%20year%20to%20maturity"
+```
+
+Response includes:
+- 30-year projection with yearly breakdown
+- Sustainability status (SUSTAINABLE/AT_RISK)
+- AI recommendations for each year
+- Mix-match investment strategies (REINVEST, HYBRID, INCOME_FOCUS, ANNUITY)
+- Phase-based planning suggestions
+
+### API Endpoints
+
+- `POST /api/v1/retirement-plans` - Generate from structured JSON request
+- `POST /api/v1/retirement-plans/from-query` - Generate from natural language query
+- `GET /api/v1/retirement-plans/health` - Health check
+
+### Key Features
+
+✅ Natural language query parsing (EUR, USD, GBP, CHF, etc.)
+✅ Year-by-year financial projections with inflation adjustment
+✅ AI-generated recommendations for each retirement year
+✅ Investment strategy recommendations (phase-based: growth → balanced → preservation)
+✅ Sustainability analysis and plan viability assessment
+✅ Executive summary and comprehensive insights
+✅ 26 comprehensive tests (11 service + 15 controller)
+
+### Documentation
+
+- [`RETIREMENT_PLAN_API.md`](./RETIREMENT_PLAN_API.md) - Complete technical documentation, architecture, integration guide
+- [`RETIREMENT_PLAN_QUICK_START.md`](./RETIREMENT_PLAN_QUICK_START.md) - Quick start guide with examples in curl, PowerShell, Python, JavaScript
+
+### Example Query Formats
+
+- "I want a pension of EUR 3000 per month having a pension pot of EUR 500,000 with 1 year left"
+- "Help me plan retirement: USD 4000 monthly from USD 600,000 pot, 2 years to maturity"
+- "I need £2500 monthly pension from £400,000 savings, 3 years until fund matures"
+
+### Implementation Details
+
+**New Classes:**
+- Models: `RetirementPlanRequest`, `RetirementPlan`, `RetirementYearPlan`
+- Service: `RetirementPlanService` (AI logic, calculations, recommendations)
+- Controller: `RetirementPlanController` (REST API)
+- Tests: `RetirementPlanServiceTest`, `RetirementPlanControllerTest`
+
+**Updated:**
+- `WebCorsConfig.java` - Enhanced CORS configuration
+
+See documentation files for detailed API specifications, usage examples, and integration guides.
+
+---
