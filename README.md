@@ -10,7 +10,7 @@ backend for a Canada Life Europe retirement journey.
 - [`demo/`](./demo/) — Spring Boot API and scheduled maturity workflow.
 
 The demo follows one maturity case from twelve months before maturity to
-payout across three roles: the CLE case worker (operations), the broker
+payout across three roles: the CLE case worker (operations), the broker 
 consultant who advises the customer, and the customer. The platform opens the
 case, routes it to the right advisor and issues the paperwork on its own, so
 people only spend time on advice and on the exceptions that need them.
